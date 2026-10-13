@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "GPT-Navigator",
-  "version": "1.0",
+  "version": "1.0.1",
   "author": "Skullboneslayer",
   "description": "Restore ChatGPT's long-chat navigation with the original-style prompt rail and an optional searchable menu for Chromium browsers.",
   "permissions": [

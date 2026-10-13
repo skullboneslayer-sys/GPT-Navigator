@@ -69,7 +69,7 @@
       .target { position:fixed; pointer-events:none; border:2px solid var(--accent); background:color-mix(in srgb,var(--accent) 5%,transparent); border-radius:8px; box-shadow:0 0 0 4px color-mix(in srgb,var(--accent) 15%,transparent); }
       .toast { pointer-events:none; position:fixed; bottom:26px; left:50%; transform:translateX(-50%); max-width:calc(100vw - 32px); border:1px solid var(--line); background:var(--bg); color:var(--text); border-radius:10px; padding:12px 16px; font-size:13px; box-shadow:var(--shadow); }
       .rail { pointer-events:auto; position:fixed; right:16px; top:50%; transform:translateY(-50%); width:32px; max-width:calc(100vw - 32px); padding:0; border:1px solid transparent; border-radius:16px; overflow:hidden; }
-      .rail-bars { width:100%; max-height:55vh; overflow-y:auto; overflow-x:hidden; overscroll-behavior:contain; scrollbar-width:none; }
+      .rail-bars { width:100%; max-height:min(80vh,max(120px,calc(100vh - 200px))); overflow-y:auto; overflow-x:hidden; overscroll-behavior:contain; scrollbar-width:none; }
       .rail-bars::-webkit-scrollbar { display:none; width:0; height:0; }
       .prompt-bar { display:flex; align-items:center; justify-content:flex-end; width:100%; height:13px; padding:0 5px; border:0; border-radius:0; background:transparent; text-align:left; }
       .rail-mark { display:block; flex:0 0 20px; width:20px; height:1px; background:#d1d1d1; }
@@ -77,6 +77,12 @@
       .prompt-bar[aria-current="true"] .rail-mark { background:var(--text); opacity:1; }
       .rail-label { display:none; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
       .rail[data-expanded="true"] { width:320px; padding:6px; background:var(--bg); border-color:var(--line); box-shadow:0 4px 16px #0002; }
+      .rail[data-expanded="true"] .rail-bars { scrollbar-width:auto; }
+      .rail[data-expanded="true"] .rail-bars::-webkit-scrollbar { display:block; width:3px; height:0; background:transparent; }
+      .rail[data-expanded="true"] .rail-bars::-webkit-scrollbar-track { background:transparent; }
+      .rail[data-expanded="true"] .rail-bars::-webkit-scrollbar-thumb { min-height:24px; border-radius:999px; background:color-mix(in srgb,var(--text) 18%,transparent); }
+      .rail[data-expanded="true"] .rail-bars::-webkit-scrollbar-thumb:hover { background:color-mix(in srgb,var(--text) 27%,transparent); }
+      .rail[data-expanded="true"] .rail-bars::-webkit-scrollbar-button { display:none; width:0; height:0; }
       .rail[data-expanded="true"] .prompt-bar { height:36px; padding:0 12px; justify-content:flex-start; border-radius:10px; }
       .rail[data-expanded="true"] .rail-label { display:block; width:100%; font-size:13px; line-height:20px; }
       .rail[data-expanded="true"] .rail-mark { display:none; }
