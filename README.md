@@ -33,6 +33,18 @@ Restore the long chat navigation menu that Open AI removed between August and Se
 - Long prompt lists scroll, and the interface matches ChatGPT's theme.
 - An optional full menu provides search, message filters and full-chat indexing.
 
+
+## Install from the Chrome Web Store
+
+[**Get GPT-Navigator on the Chrome Web Store**](https://chromewebstore.google.com/detail/edakgaiebdjlbhepkcfnihejgmcamlnb) 
+
+Install directly from the store—no ZIP download or Developer mode needed. Look for this logo:
+<img width="64" height="64" alt="128" src="https://github.com/user-attachments/assets/7b0ae906-ca77-4646-979b-4dfc58f3ea8c" />
+
+Prefer installing manually? Follow the instructions below.
+
+
+
 ## Install in a Chromium browser
 
 1. Download **GPT-Navigator-chromium-v1.0.zip** from [Releases](https://github.com/skullboneslayer-sys/GPT-Navigator/releases).
