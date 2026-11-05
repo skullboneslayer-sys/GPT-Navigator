@@ -68,6 +68,9 @@
       if (element.closest('[hidden], [aria-hidden="true"]')) continue;
       const rect = element.getBoundingClientRect();
       if (!element.getClientRects().length || rect.height < 1) continue;
+      // An open edit form is not a new prompt. Keep its cached original until
+      // ChatGPT submits the edit and renders the resulting conversation.
+      if (role === 'user' && element.querySelector('textarea, [contenteditable="true"], [contenteditable="plaintext-only"]')) continue;
       const turn = element.closest('[data-turn-key], [data-testid^="conversation-turn-"]');
       const unit = element.getAttribute('data-chatgpt-search-unit-key') || (parent && roleOf(parent) === role ? parent.getAttribute('data-chatgpt-search-unit-key') : null);
       const messageId = element.getAttribute('data-message-id') || element.querySelector('[data-message-id]')?.getAttribute('data-message-id') || uniqueMessageId(
@@ -106,9 +109,9 @@
       if (!text) text = role === 'user' ? '[Attachment or empty prompt]' : '[Response loading or non-text content]';
       const scroller = scrollContainer(element);
       const view = viewport(scroller);
-      // Fallback ordinals can be reassigned when older history is prepended.
-      // They cannot prove that a changed UUID occupies the same branch slot.
-      const slot = stableTurnId ? `turn:${stableTurnId}:${role}` : turnNumber !== undefined ? `position:${turnNumber}:${role}` : stableUnit ? `unit:${stableUnit}` : null;
+      // A rendered ordinal can be reassigned when older history loads. Only a
+      // durable turn or search-unit key can prove a same-slot replacement.
+      const slot = stableTurnId ? `turn:${stableTurnId}:${role}` : stableUnit ? `unit:${stableUnit}` : null;
       const metrics = scrollMetrics(scroller);
       const y = rect.top - view.top + metrics.position;
       result.push({ id, stable, transient, slot, turnElement: turn, messageId: messageId || null, role, text, element, scroller, y, scrollMaximum: metrics.maximum, scrollReversed: metrics.minimum < 0, endY: metrics.maximum - y, coordinateEstimated: false, order: turnNumber === undefined ? null : Number(turnNumber) * 2 + (role === 'assistant' ? 1 : 0) });
@@ -117,6 +120,15 @@
   }
   function mergeMessages(index, observed, { historyPrepend = false, headHydration = false } = {}) {
     const byId = new Map(index.map((item) => [item.id, item]));
+    const rebased = observed.some((message) => {
+      const previous = byId.get(message.id);
+      return message.stable && previous?.stable && message.order !== null && previous.order !== null && message.order !== previous.order;
+    });
+    // A lazy history window can restart conversation-turn-N from zero. Until
+    // those cached positions are seen again, preserve their anchored ordering.
+    if (rebased || (headHydration && !observed.some((message) => byId.has(message.id)))) {
+      for (const cached of index) cached.order = null;
+    }
     const reverseGroups = new Map();
     for (const message of observed) {
       if (!message.scrollReversed || !Number.isFinite(message.scrollMaximum)) continue;
@@ -182,7 +194,9 @@
       byId.set(message.id, message);
     }
     // Explicit turn positions, when available, survive virtualization and reflow.
-    if (index.length && index.every((item) => item.order !== null)) index.sort((a, b) => a.order - b.order);
+    if (index.length && index.every((item) => item.order !== null) && new Set(index.map((item) => item.order)).size === index.length) {
+      index.sort((a, b) => a.order - b.order);
+    }
     return index;
   }
   function isEditable(event) {

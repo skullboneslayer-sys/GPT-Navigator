@@ -109,11 +109,13 @@
   const panel = $('.panel'), list = $('.list'), search = $('input'), status = $('.status');
   let index = [], visible = [], fallbackIds = new WeakMap(), sequence = 0;
   const identityAliases = new Map();
+  const supersededResponses = new Set();
   let activeId = null, filter = 'all', theme = 'auto', route = location.pathname + location.search;
   let root = C.conversationRoot(), scanTimer = null, scrollTimer = null, operation = null;
   let complete = false, open = false, signature = '', toastTimer = null, highlightTimer = null;
-  let restoring = false, session = 0, headHydrating = 0;
+  let session = 0;
   let jumpPin = null;
+  let knownTail = null, pendingTail = null, nativeBranch = null;
   let completedHeadId = null, railExpanded = false, railTimer = null, railSignature = '', suppressRailFocus = false, touchReveal = false, ignoreTouchClick = false;
 
   function savePreferences() {
@@ -160,8 +162,10 @@
     index = []; visible = []; activeId = null; complete = false; signature = '';
     completedHeadId = null; railSignature = ''; collapseRail();
     jumpPin = null;
+    knownTail = null; pendingTail = null; nativeBranch = null;
     fallbackIds = new WeakMap(); sequence = 0;
     identityAliases.clear();
+    supersededResponses.clear();
     $('.target').hidden = true;
     setStatus(message);
     render();
@@ -176,10 +180,231 @@
       search.value = '';
     }
   }
+  function invalidateBranch(removed, tail = null) {
+    index = index.filter((entry) => !removed.has(entry.id));
+    session++;
+    if (operation) operation.cancelled = true;
+    identityAliases.clear();
+    activeId = null; jumpPin = null;
+    complete = false; completedHeadId = null;
+    knownTail = tail; pendingTail = null; nativeBranch = null;
+    $('.target').hidden = true;
+    setStatus('Conversation branch changed. Removed messages from the previous branch.');
+  }
+  function uniqueSlots(messages) {
+    const slots = new Map();
+    for (const message of messages) {
+      if (message.slot) slots.set(message.slot, slots.has(message.slot) ? null : message);
+    }
+    return slots;
+  }
+  const nativeTurnSelector = '[data-turn-key], [data-testid^="conversation-turn-"]';
+  function adjacentNativeTurns(before, after) {
+    let a = before.turnElement, b = after.turnElement;
+    if (!a || !b || before.scroller !== after.scroller) return false;
+    if (a === b) return true;
+    const parents = [];
+    for (let node = a.parentElement; node && root.contains(node); node = node.parentElement) parents.push(node);
+    const common = parents.find((node) => node.contains(b));
+    if (!common) return false;
+    while (a.parentElement !== common) a = a.parentElement;
+    while (b.parentElement !== common) b = b.parentElement;
+    return a.nextElementSibling === b;
+  }
+  function confirmNativeEdit(turn) {
+    if (!turn?.querySelector('textarea, [contenteditable="true"], [contenteditable="plaintext-only"]')) return;
+    captureNativeBranch('edit', turn, true);
+  }
+  function captureNativeBranch(kind, turn, confirmed = kind === 'redo') {
+    checkContext();
+    if (!root?.contains(turn)) return;
+    const role = kind === 'edit' ? 'user' : 'assistant';
+    const observed = C.readMessages(root, fallbackIds, () => ++sequence).filter((entry) => !supersededResponses.has(entry.id));
+    const current = observed.find((entry) => entry.turnElement === turn && entry.role === role);
+    const original = index.find((entry) => entry.id === current?.id) ||
+      index.find((entry) => entry.turnElement === turn && entry.role === role);
+    const cut = original ? index.indexOf(original) : -1;
+    if (cut < 0 || !original.stable) return;
+    const predecessor = index[cut - 1];
+    nativeBranch = {
+      kind, original:{ ...original }, predecessor:predecessor?.stable ? { ...predecessor } : null,
+      atStart:cut === 0,
+      priorIds:new Set([...index, ...observed].map((entry) => entry.id)),
+      removed:new Set(index.slice(cut).map((entry) => entry.id)),
+      confirmed, until:Date.now() + (kind === 'edit' && !confirmed ? 300000 : 30000)
+    };
+    return nativeBranch;
+  }
+  function observeNativeBranchAction(event) {
+    if (!event.isTrusted || !(event.target instanceof Element)) return;
+    const path = event.composedPath();
+    const button = event.target.closest('[role="menuitem"]') || event.target.closest('button, [role="button"]') ||
+      path.find((node) => node instanceof Element && node.matches('[role="menuitem"], button, [role="button"]'));
+    if (!button || button.closest('.markdown')) return;
+    const label = C.normalize(button.getAttribute('aria-label') || button.title || button.textContent).toLowerCase();
+    const turn = button.closest(nativeTurnSelector);
+    if (!turn) {
+      if (nativeBranch?.kind === 'redo' && !nativeBranch.confirmed && Date.now() < nativeBranch.until &&
+          (button.closest('[role="menu"]') || path.some((node) => node instanceof Element && node.matches('[role="menu"]'))) &&
+          /^(?:try again(?:\s|$)|use pro mode$|search the web$|submit$)/u.test(label)) {
+        nativeBranch.confirmed = true;
+        nativeBranch.until = Date.now() + 30000;
+      }
+      return;
+    }
+    if (!root?.contains(turn)) return;
+    const testId = button.getAttribute('data-testid');
+    if (/^(save|send|save and submit)$/.test(label)) { confirmNativeEdit(turn); return; }
+    if (label === 'cancel' && nativeBranch?.original.turnElement === turn) { nativeBranch = null; return; }
+    const kind = testId === 'edit-message-button' || /^(edit|edit message)$/.test(label) ? 'edit' :
+      testId === 'regenerate-response-button' || /^(regenerate( response)?|redo( response)?|retry|try again)$/.test(label) ? 'redo' : null;
+    if (!kind) return;
+    const captured = captureNativeBranch(kind, turn, kind === 'redo' && !button.hasAttribute('aria-haspopup'));
+    if (captured) captured.trigger = button;
+  }
+  function responseGenerating(messages) {
+    return messages.some((entry) => entry.role === 'assistant' && entry.transient) ||
+      [...document.querySelectorAll('button[data-testid="stop-button"], button[aria-label="Stop generating"]')]
+        .some((stop) => stop.getClientRects().length && !stop.closest('[hidden], [aria-hidden="true"]'));
+  }
+  function reconcileNativeBranch(observed, seen) {
+    const branch = nativeBranch;
+    if (!branch) return false;
+    if (Date.now() > branch.until) { nativeBranch = null; return false; }
+    if (!branch.confirmed || (branch.kind === 'edit' && branch.original.turnElement.isConnected &&
+        branch.original.turnElement.querySelector('textarea, [contenteditable="true"], [contenteditable="plaintext-only"]'))) return false;
+    const { original, predecessor } = branch;
+    if ([...branch.removed].some((id) => id !== original.id && seen.has(id))) return false;
+    const preceding = predecessor && seen.get(predecessor.id);
+    let replacement = observed.find((entry) => (entry.turnElement === original.turnElement ||
+      (branch.kind === 'redo' && preceding?.role === 'user' && entry.turnElement === preceding.turnElement)) &&
+      entry.role === original.role && !branch.priorIds.has(entry.id)) ||
+      seen.get(original.id) || observed.find((entry) => entry.turnElement === original.turnElement && entry.role === original.role);
+    if (!replacement && predecessor) {
+      const current = seen.get(predecessor.id);
+      if (!current) return false;
+      replacement = observed[observed.indexOf(current) + 1];
+      if (replacement && !adjacentNativeTurns(current, replacement)) return false;
+    }
+    if (!replacement && branch.kind === 'redo' && predecessor?.role === 'user' && seen.has(predecessor.id) &&
+        !seen.has(original.id) && responseGenerating(observed)) {
+      supersededResponses.add(original.id);
+      invalidateBranch(branch.removed);
+      return true;
+    }
+    if (!replacement && branch.atStart) replacement = observed[0];
+    if (!replacement || replacement.role !== original.role ||
+        (replacement.id !== original.id && branch.priorIds.has(replacement.id))) return false;
+    if (replacement.id === original.id && replacement.text === original.text && !responseGenerating(observed)) return false;
+    const removed = new Set(branch.removed);
+    if (replacement.id === original.id) removed.delete(original.id);
+    else if (branch.kind === 'redo') {
+      // Old and regenerated replies can coexist while ChatGPT switches them.
+      supersededResponses.add(original.id);
+      const previous = observed.findIndex((entry) => entry.id === original.id);
+      if (previous >= 0) observed.splice(previous, 1);
+      seen.delete(original.id);
+    }
+    invalidateBranch(removed);
+    return true;
+  }
+  function reconcileGeneratingBranch(observed, seen, currentTail, last, atBottom, viewHeight) {
+    if (!knownTail || knownTail.scroller !== last.scroller) return false;
+    if (seen.has(knownTail.id)) { knownTail.pendingRestart = null; return false; }
+    if (currentTail.trailingSpace > Math.max(viewHeight, knownTail.trailingSpace + 32) ||
+        (!atBottom && Math.abs(currentTail.trailingSpace - knownTail.trailingSpace) > 24)) return false;
+    let candidate = knownTail.pendingRestart;
+    if (candidate && (Date.now() >= candidate.until || [...candidate.removed].some((id) => seen.has(id)))) {
+      candidate = knownTail.pendingRestart = null;
+    }
+    if (!candidate) {
+      const oldEnd = index.findIndex((entry) => entry.id === knownTail.id);
+      const cut = index.findLastIndex((entry) => entry.scroller === last.scroller && entry.messageId && seen.has(entry.id)) + 1;
+      if (!cut || cut > oldEnd) return false;
+      const anchor = index[cut - 1];
+      candidate = { anchor:anchor.id, endY:anchor.endY, removed:new Set(index.slice(cut).map((entry) => entry.id)), until:Date.now() + 10000 };
+    }
+    const current = seen.get(candidate.anchor);
+    if (!current) return false;
+    const next = observed[observed.indexOf(current) + 1];
+    // A virtual window can hide a suffix while keeping its space. Only a
+    // shortened end after a shared turn indicates the continuation was replaced.
+    if (candidate.endY - current.endY <= 8 || (next && !adjacentNativeTurns(current, next)) ||
+        [...candidate.removed].some((id) => seen.has(id))) return false;
+    if (!responseGenerating([last])) {
+      // ChatGPT can remove the suffix in a separate render before generating.
+      knownTail.pendingRestart = candidate;
+      return false;
+    }
+    invalidateBranch(candidate.removed, last.stable ? currentTail : null);
+    return true;
+  }
+  function reconcileBranch(observed, seen, olderLoading) {
+    if (reconcileNativeBranch(observed, seen)) return;
+    const oldSlots = uniqueSlots(index), newSlots = uniqueSlots(observed);
+    const replaced = index.findIndex((entry) => {
+      const current = newSlots.get(entry.slot);
+      return oldSlots.get(entry.slot) === entry && entry.messageId && current?.messageId &&
+        current.messageId !== entry.messageId && !seen.has(entry.id);
+    });
+    if (replaced >= 0) {
+      invalidateBranch(new Set(index.slice(replaced).map((entry) => entry.id)));
+      return;
+    }
+
+    // Regenerating can change the turn key, and a reset may only remove turns.
+    // A missing node in a virtual window is not evidence that it was deleted.
+    const scroller = observed[0]?.scroller;
+    if (!scroller || olderLoading) {
+      pendingTail = null;
+      return;
+    }
+    const last = observed.reduce((tail, entry) => entry.scroller === scroller && (!tail || entry.y >= tail.y) ? entry : tail, null);
+    const view = C.viewport(scroller), { position, maximum } = C.scrollMetrics(scroller);
+    const rect = last?.element.getBoundingClientRect();
+    const atBottom = position >= maximum - 3;
+    const atEnd = atBottom && rect && rect.top < view.bottom && rect.bottom > view.top;
+    const end = rect && last.y + rect.height;
+    const mountedEnd = rect && Math.abs(end - maximum - view.height) <= 4;
+    const currentTail = last && { id: last.id, scroller, end, trailingSpace: maximum + view.height - end };
+    if (last && reconcileGeneratingBranch(observed, seen, currentTail, last, atBottom, view.height)) return;
+    if (!last?.stable || (!atEnd && !mountedEnd) || C.historyLoading(scroller) ||
+        observed.some((entry) => entry.transient)) { pendingTail = null; return; }
+    const matches = (entry) => entry.stable && seen.get(entry.id)?.stable && compatible(entry, seen.get(entry.id));
+    const tailIndex = index.findIndex((entry) => entry.id === canonicalId(knownTail?.id));
+    if (tailIndex < 0 || matches(index[tailIndex])) {
+      knownTail = currentTail; pendingTail = null;
+      return;
+    }
+    // An unvirtualized thread can expose a shorter physical end without moving
+    // the viewport. Otherwise require the real last message to be in view.
+    const shorterMountedEnd = mountedEnd && knownTail.scroller === scroller && end + 4 < knownTail.end;
+    if ((!atEnd && !shorterMountedEnd) || (atEnd && maximum > 3 && view.bottom - rect.bottom > Math.max(160, view.height * .65))) {
+      pendingTail = null;
+      return;
+    }
+
+    const pending = pendingTail;
+    if (pending && pending.scroller === scroller && pending.id === last.id &&
+        index.some((entry) => entry.id === pending.anchor && matches(entry))) {
+      const remaining = 450 - (Date.now() - pending.since);
+      if (remaining <= 0) invalidateBranch(pending.removed, currentTail);
+      else scheduleScan(remaining);
+      return;
+    }
+    pendingTail = null;
+    const anchorIndex = index.findLastIndex(matches);
+    if (anchorIndex >= tailIndex) {
+      knownTail = currentTail;
+    } else if (anchorIndex >= 0) {
+      pendingTail = { scroller, id: last.id, anchor: index[anchorIndex].id, since: Date.now(), removed: new Set(index.slice(anchorIndex + 1).map((entry) => entry.id)) };
+      scheduleScan(450);
+    }
+  }
   function scan() {
     checkContext();
     if (!root?.isConnected) return [];
-    const observed = C.readMessages(root, fallbackIds, () => ++sequence);
+    const observed = C.readMessages(root, fallbackIds, () => ++sequence).filter((entry) => !supersededResponses.has(entry.id));
     // Hydrating a partial turn can replace its fallback ordinals with real keys.
     // Only a retained DOM identity can prove that this is the same message.
     for (const message of observed) {
@@ -193,24 +418,14 @@
       else Object.assign(old, message);
     }
     activeId = canonicalId(activeId);
-    // An unloaded ordinal is not an identity. Retaining it creates phantom rows
-    // when the same partial turn is remounted with hydrated keys.
-    index = index.filter((entry) => !entry.transient || (entry.element.isConnected && observed.some((message) => message.id === entry.id)));
-    // Separate the immutable message identity from its slot in a turn.
-    for (const message of observed) {
-      const old = index.find((entry) => entry.slot && entry.slot === message.slot);
-      if (!old) continue;
-      if (old.id !== message.id || !compatible(old, message)) {
-        jumpPin = null;
-        if (operation) operation.cancelled = true;
-        index.splice(index.indexOf(old));
-        complete = false;
-        setStatus('Conversation branch changed. Index full chat again for the current branch.');
-        break;
-      }
-    }
+    const seen = new Map(observed.map((entry) => [entry.id, entry]));
+    // Only durable identities are useful once their DOM node is unmounted.
+    index = index.filter((entry) => entry.stable || seen.get(entry.id)?.element === entry.element);
+    const headHydrating = Boolean(operation?.hydratingHead && !operation.cancelled && operation.session === session);
+    const olderLoading = headHydrating || [...new Set(observed.map((message) => message.scroller))].some((scroller) => C.historyLoading(scroller, { olderOnly: true }));
+    reconcileBranch(observed, seen, olderLoading);
     visible = observed;
-    C.mergeMessages(index, observed, { headHydration: headHydrating > 0, historyPrepend: headHydrating > 0 || [...new Set(observed.map((message) => message.scroller))].some((scroller) => C.historyLoading(scroller, { olderOnly: true })) });
+    C.mergeMessages(index, observed, { headHydration: headHydrating, historyPrepend: olderLoading });
     // A later visit can reveal history that the page withheld during the scan.
     // Keep completion honest when a stable earlier boundary is discovered.
     const head = index.find((message) => message.stable);
@@ -236,36 +451,83 @@
     const category = filter === 'user' ? 'prompts' : filter === 'assistant' ? 'replies' : 'messages';
     $('.total').textContent = shown === categoryTotal ? `${categoryTotal} ${category} found` : `${shown} of ${categoryTotal} ${category}`;
     $('.coverage').textContent = complete ? 'Full scan finished' : 'Page index';
-    const busy = !!operation;
-    $('.index').textContent = busy ? 'Cancel' : 'Index full chat';
-    $('.refresh').disabled = busy;
-    $('.previous').disabled = busy || !index.some((message) => message.role === 'user');
+    $('.index').textContent = operation?.kind === 'index' ? 'Cancel' : 'Index full chat';
+    $('.refresh').disabled = Boolean(operation);
+    $('.previous').disabled = !index.some((message) => message.role === 'user');
     $('.next').disabled = $('.previous').disabled;
   }
+  async function recoverJumpArrival(pin) {
+    checkContext();
+    if (jumpPin !== pin || operation || !pin.scroller.isConnected) return;
+    const before = C.scrollMetrics(pin.scroller);
+    if (before.maximum <= pin.maximum + 2 || Date.now() >= pin.until) return;
+    // Older history may displace the viewport and unmount the target. Try its
+    // shifted position once and require the exact message to remount there.
+    pin.probing = true;
+    move(pin.scroller, pin.position + before.maximum - pin.maximum);
+    const probe = C.scrollPosition(pin.scroller);
+    const deadline = Math.min(pin.until, Date.now() + 1400);
+    while (jumpPin === pin && !operation && Date.now() < deadline) {
+      await delay(120);
+      if (jumpPin !== pin || operation || !pin.scroller.isConnected) return;
+      scan();
+      if (pin.maximum >= before.maximum) { pin.probing = false; return; }
+    }
+    if (jumpPin === pin && !operation) {
+      jumpPin = null;
+      if (pin.scroller.isConnected && Math.abs(C.scrollPosition(pin.scroller) - probe) <= 2) move(pin.scroller, before.position);
+      scheduleScan(0);
+    }
+  }
+  function keepJumpArrival(mounted) {
+    const pin = jumpPin;
+    if (!pin?.scroller.isConnected) return false;
+    const pinned = findObserved(mounted, pin.id, pin.target);
+    const sameScroller = pinned?.scroller === pin.scroller;
+    const metrics = C.scrollMetrics(pin.scroller);
+    const following = Date.now() < pin.until;
+    const view = C.viewport(pin.scroller);
+    if (following && C.historyLoading(pin.scroller, { olderOnly: true })) pin.loadingOlder = true;
+    const grew = metrics.maximum > pin.maximum + 2;
+    if (following && grew && sameScroller && pinned.y > pin.y + 2) {
+      const correction = pinned.element.getBoundingClientRect().top - view.top - pin.offset;
+      if (Math.abs(correction) > 2) move(pin.scroller, metrics.position + correction);
+      pin.position = C.scrollPosition(pin.scroller);
+      pin.y = pinned.y;
+      pin.maximum = metrics.maximum;
+    } else if (following && grew && !sameScroller && pin.loadingOlder && !pin.probed && !operation) {
+      pin.probed = true;
+      queueMicrotask(() => recoverJumpArrival(pin));
+    }
+    const rect = sameScroller && pinned.element.getBoundingClientRect();
+    const atArrival = rect && rect.bottom > view.top && rect.top < view.bottom && Math.abs(C.scrollPosition(pin.scroller) - pin.position) <= 2;
+    if (atArrival || (following && (pin.probing || (!sameScroller && (grew || pin.loadingOlder || Math.abs(metrics.position - pin.position) <= 2))))) {
+      activeId = canonicalId(pin.id);
+      markActive();
+      if (!atArrival) scheduleScan(Math.min(350, Math.max(0, pin.until - Date.now())));
+      return true;
+    }
+    return false;
+  }
   function updateActive() {
-    if (!visible.length) { activeId = null; jumpPin = null; markActive(); return; }
     // Jumps align the target at 76px. Track just inside it so a preceding
     // message's final pixels cannot steal selection and skip a compact step.
     const readingOffset = 80;
     const mounted = visible.filter((message) => message.element.isConnected);
-    // A short final reply cannot always reach the reading line at the bottom.
-    // Keep the exact selection until scrolling changes the user's position.
-    if (jumpPin) {
-      const pinned = mounted.find((message) => message.id === canonicalId(jumpPin.id) && message.scroller === jumpPin.scroller);
-      const rect = pinned?.element.getBoundingClientRect(), view = pinned ? C.viewport(pinned.scroller) : null;
-      if (pinned && Math.abs(C.scrollPosition(pinned.scroller) - jumpPin.position) <= 2 && rect.bottom > view.top && rect.top < view.bottom) {
-        jumpPin.id = pinned.id; activeId = pinned.id;
-        markActive();
-        return;
-      }
-      jumpPin = null;
-    }
+    if (keepJumpArrival(mounted)) return;
+    jumpPin = null;
+    if (!mounted.length) { activeId = null; markActive(); return; }
     const candidates = mounted.filter((message) => {
       const rect = message.element.getBoundingClientRect();
       const view = C.viewport(message.scroller);
       return rect.bottom > view.top + readingOffset && rect.top < view.bottom;
     });
-    const nearest = candidates.sort((a, b) => {
+    const bottomPrompt = candidates.findLast((message) => {
+      if (message.role !== 'user') return false;
+      const view = C.viewport(message.scroller), metrics = C.scrollMetrics(message.scroller), rect = message.element.getBoundingClientRect();
+      return metrics.position >= metrics.maximum - 3 && rect.top >= view.top && rect.bottom <= view.bottom;
+    });
+    const nearest = bottomPrompt || candidates.sort((a, b) => {
       const distance = (message) => {
         const rect = message.element.getBoundingClientRect();
         const top = C.viewport(message.scroller).top + readingOffset;
@@ -415,76 +677,51 @@
   }
   const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
   function move(scroller, top) { C.scrollToPosition(scroller, top); }
+  function ownsOperation(task) { return operation === task && task.session === session; }
   function cancelled(task) {
     checkContext();
-    return task.cancelled || task.session !== session || !root?.isConnected;
+    return task.cancelled || !ownsOperation(task.owner || task) || !root?.isConnected;
   }
   function capturePosition(scroller) {
     const view = C.viewport(scroller);
-    const anchor = visible.find((message) => {
+    const inView = visible.filter((message) => {
       const rect = message.element.getBoundingClientRect();
-      return message.element.isConnected && rect.bottom > view.top && rect.top < view.bottom;
+      return message.scroller === scroller && message.element.isConnected && rect.bottom > view.top && rect.top < view.bottom;
     });
-    const top = C.scrollPosition(scroller);
-    return { top, fromEnd: Math.max(0, scroller.scrollHeight - scroller.clientHeight - top), id: anchor?.id, anchor: anchor ? { ...anchor } : null, offset: anchor ? anchor.element.getBoundingClientRect().top - view.top : 0 };
+    const anchor = inView.find((message) => message.stable) || inView[0];
+    const metrics = C.scrollMetrics(scroller);
+    return { top: metrics.position, fromEnd: metrics.maximum - metrics.position, reversed: metrics.minimum < 0, anchor: anchor ? { ...anchor } : null, offset: anchor ? anchor.element.getBoundingClientRect().top - view.top : 0 };
   }
   async function restorePosition(scroller, position, task) {
     checkContext();
-    if (task.session !== session || route !== task.route) return false;
-    restoring = true;
+    if (!ownsOperation(task) || route !== task.route || !scroller.isConnected) return false;
+    task.restoring = true;
     task.restoreClamped = false;
     try {
-      const current = index.find((message) => message.id === canonicalId(position.id));
-      // Prepending older history moves absolute coordinates. The distance from
-      // the end is another candidate that can remount the original message;
-      // its immutable identity still has to match before restoring the offset.
-      const endPosition = Math.max(0, scroller.scrollHeight - scroller.clientHeight - position.fromEnd);
-      const observedPosition = current ? current.y - position.offset : position.top;
-      const candidates = current?.element.isConnected ? [observedPosition, endPosition] : [endPosition, observedPosition];
-      let exact = null;
-      for (const candidate of new Set(candidates)) {
-        move(scroller, candidate);
-        await delay(220);
-        checkContext();
-        if (task.session !== session || route !== task.route) return false;
-        exact = position.id ? resolve(position.id, position.anchor) : null;
-        if (exact) break;
-      }
       const anchor = canonicalTarget(position.anchor);
-      const latest = index.find((message) => message.id === anchor?.id);
-      if (!exact && anchor?.stable && latest) {
-        const restoreTask = { ...task, cancelled:false, started:Date.now(), limit:12000 };
-        exact = await seek({ ...anchor, y:latest.y }, scroller, restoreTask);
-      }
-      checkContext();
-      if (task.session !== session || route !== task.route) return false;
-      for (let attempt = 0; exact && attempt < 3; attempt++) {
-        move(scroller, C.scrollPosition(scroller) + exact.element.getBoundingClientRect().top - C.viewport(scroller).top - position.offset);
-        await delay(140);
-        checkContext();
-        if (task.session !== session || route !== task.route) return false;
-        exact = resolve(position.id, position.anchor);
-        if (exact && Math.abs(exact.element.getBoundingClientRect().top - C.viewport(scroller).top - position.offset) <= 3) return true;
-      }
+      const recovery = { owner:task, started:Date.now(), limit:12000 };
+      const hints = [position.top];
+      if (position.reversed) hints.push(C.scrollMetrics(scroller).maximum - position.fromEnd);
+      const found = anchor && (resolve(anchor.id, anchor) || await seekLoaded(anchor, scroller, recovery, position.offset, hints));
+      const exact = found && await align(found, recovery, position.offset);
+      if (cancelled(recovery)) return false;
       if (exact) {
-        const rect = exact.element.getBoundingClientRect(), view = C.viewport(scroller);
-        const desired = C.scrollPosition(scroller) + rect.top - view.top - position.offset;
-        const maximum = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
-        if ((desired < -3 || desired > maximum + 3) && rect.bottom > view.top && rect.top < view.bottom) {
-          task.restoreClamped = true;
-          toast('Returned to your original message. Its previous reading offset no longer fits the page.');
-          return false;
-        }
+        task.restoreClamped = Math.abs(exact.element.getBoundingClientRect().top - C.viewport(exact.scroller).top - position.offset) > 3;
+        return !task.restoreClamped;
       }
-      move(scroller, Math.max(0, scroller.scrollHeight - scroller.clientHeight - position.fromEnd));
-      if (position.id) toast('Original message did not reload. Restored an approximate scroll position.');
-      return !position.id;
-    } finally { restoring = false; }
+      // A distance measured from the end is a useful probe, not a fallback:
+      // a changed scroll extent could otherwise send the reader to the bottom.
+      move(scroller, position.top);
+      return !anchor;
+    } finally { task.restoring = false; }
   }
-  function startOperation(kind) {
-    if (operation) { operation.cancelled = true; return null; }
+  function startOperation(kind, scroller) {
+    const previous = operation?.session === session ? operation : null;
+    const position = previous?.scroller === scroller ? previous.position : capturePosition(scroller);
+    const arrival = jumpPin || previous?.arrival;
+    if (previous) previous.cancelled = true;
     jumpPin = null;
-    const task = { kind, cancelled: false, session, route, started: Date.now() };
+    const task = { kind, scroller, position, arrival, cancelled: false, session, route, started: Date.now() };
     operation = task;
     updateCounts();
     return task;
@@ -493,7 +730,7 @@
     if (operation === task) { operation = null; render(); }
   }
   function operationTimeLeft(task) {
-    return (task.limit || (task.kind === 'index' ? 180000 : 120000)) - (Date.now() - task.started);
+    return (task.limit || (task.kind === 'index' ? 180000 : 12000)) - (Date.now() - task.started);
   }
   async function waitForScan(task, milliseconds) {
     const until = Date.now() + milliseconds;
@@ -511,23 +748,25 @@
     });
     const stable = inView.filter((message) => message.stable && !message.transient).sort((a, b) => a.y - b.y);
     // The older-history announcement may be an offscreen sibling of the thread.
-    const pending = C.historyLoading(scroller) || inView.some((message) => message.transient);
+    const olderPending = C.historyLoading(scroller, { olderOnly: true });
+    const pending = olderPending || C.historyLoading(scroller) || inView.some((message) => message.transient);
     const boundary = stable.slice(0, 3).map((message) => canonicalId(message.id)).join('|');
     const progress = `${scroller.scrollHeight}:${index.length}:${boundary}`;
     return {
-      messages, hasContent: inView.length > 0, head: stable[0], boundary, pending,
+      messages, inView, hasContent: inView.length > 0, head: stable[0], boundary, pending, olderPending,
       leadingGap: stable.length ? stable[0].element.getBoundingClientRect().top - view.top : Infinity,
       progress, signal: `${progress}:${pending}`
     };
   }
-  async function settleViewport(scroller, task, { minimum = 180, maximum = 2500, quiet = 180, stopOnPending = false } = {}) {
+  async function settleViewport(scroller, task, { minimum = 180, maximum = 2500, quiet = 180, stopOnOlderHistory = false, target = null, accept = () => true, allowPending = false } = {}) {
     const started = Date.now();
     let state = hydrationState(scroller), signature = state.signal, quietSince = started;
     while (!cancelled(task) && operationTimeLeft(task) > 0) {
       state = hydrationState(scroller);
-      if (stopOnPending && state.pending) return { ...state, settled: false };
+      if (target && findObserved(state.messages, target.id, target)) return { ...state, settled: true };
+      if (stopOnOlderHistory && state.olderPending) return { ...state, settled: false };
       if (state.signal !== signature) { signature = state.signal; quietSince = Date.now(); }
-      if (state.hasContent && !state.pending && Date.now() - started >= minimum && Date.now() - quietSince >= quiet) return { ...state, settled: true };
+      if (state.hasContent && (allowPending || !state.pending) && accept(state) && Date.now() - started >= minimum && Date.now() - quietSince >= quiet) return { ...state, settled: true };
       if (Date.now() - started >= maximum) break;
       if (!await waitForScan(task, 160)) break;
     }
@@ -558,9 +797,9 @@
     }
   }
   async function hydrateHead(scroller, task, options) {
-    headHydrating++;
+    task.hydratingHead = true;
     try { return await hydrateHeadViewport(scroller, task, options); }
-    finally { headHydrating--; }
+    finally { task.hydratingHead = false; }
   }
   async function hydrateHeadViewport(scroller, task, { quiet = 2500, maximum = 20000, idle = maximum } = {}) {
     const started = Date.now(), hardDeadline = started + Math.min(maximum, Math.max(0, operationTimeLeft(task)));
@@ -569,6 +808,7 @@
     let state = hydrationState(scroller), signature = state.signal, progress = state.progress, quietSince = started, probedAnchor = false, progressed = false;
     while (!cancelled(task) && Date.now() < deadline && operationTimeLeft(task) > 0) {
       state = hydrationState(scroller);
+      if (cancelled(task)) break;
       if (state.signal !== signature) { signature = state.signal; quietSince = Date.now(); }
       // Loading announcements can flicker without delivering more history.
       // Extend the idle window only when the actual indexed boundary advances.
@@ -595,16 +835,18 @@
   async function sweepHistory(scroller, task) {
     let blank = false, stalled = 0, lastY = -1;
     for (let step = 0; step < 6000 && !cancelled(task) && operationTimeLeft(task) > 0; step++) {
-      const state = await settleViewport(scroller, task, { stopOnPending: true });
+      const state = await settleViewport(scroller, task, { maximum: 5000, stopOnOlderHistory: true });
       if (cancelled(task)) break;
-      if (state.pending) return { bottom: false, blank, needsHead: true };
-      blank ||= !state.hasContent || state.pending;
+      if (state.olderPending) return { bottom: false, blank, needsHead: true };
+      if (state.pending) return { bottom: false, blank: true };
+      blank ||= !state.settled;
       setStatus(`Indexing… ${index.length} messages found. Cancel to return to your place.`);
       const maximum = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
       if (C.scrollPosition(scroller) >= maximum - 3) {
-        const bottom = await settleViewport(scroller, task, { minimum: 500, maximum: 3500, quiet: 350, stopOnPending: true });
-        if (bottom.pending) return { bottom: false, blank, needsHead: true };
-        if (C.scrollPosition(scroller) >= scroller.scrollHeight - scroller.clientHeight - 3 && !bottom.pending) return { bottom: true, blank: blank || !bottom.hasContent };
+        const bottom = await settleViewport(scroller, task, { minimum: 500, maximum: 5000, quiet: 350, stopOnOlderHistory: true });
+        if (cancelled(task)) break;
+        if (bottom.olderPending) return { bottom: false, blank, needsHead: true };
+        if (C.scrollPosition(scroller) >= scroller.scrollHeight - scroller.clientHeight - 3) return { bottom: true, blank: blank || !bottom.settled };
       }
       move(scroller, scanDestination(scroller, state.messages));
       if (!await waitForScan(task, 160)) break;
@@ -618,8 +860,7 @@
     scan();
     const scroller = mainScroller();
     if (!scroller || !visible.length) { setStatus('Open a conversation with messages first.'); return; }
-    const task = startOperation('index'); if (!task) return;
-    const position = capturePosition(scroller);
+    const task = startOperation('index', scroller);
     complete = false;
     completedHeadId = null;
     let verified = false;
@@ -641,22 +882,25 @@
         if (cancelled(task)) return;
         if (head.settled && confirmed.settled && !swept.blank && head.boundary === confirmed.boundary && count === index.length) { verified = true; break; }
       }
-      if (task.session === session) {
+      if (ownsOperation(task)) {
         complete = verified;
         completedHeadId = complete ? index.find((message) => message.stable)?.id || null : null;
         setStatus(complete ? `Scan finished: ${index.length} messages. Returning to your place.` : `${index.length} messages indexed. ChatGPT did not finish loading; try another scan.`);
       }
     } catch (error) {
-      setStatus('The page changed during indexing. Refresh the index and try again.');
+      if (ownsOperation(task)) setStatus('The page changed during indexing. Refresh the index and try again.');
       console.warn('[GPT-Navigator] Index interrupted:', error.message);
     } finally {
-      if (task.session === session) {
-        const restored = await restorePosition(scroller, position, task);
-        if (!restored && task.session === session) setStatus(task.restoreClamped ? `${task.cancelled ? 'Scan cancelled' : complete ? `Full page scan finished · ${index.length} messages` : 'Index retained'}. Returned to your original message; its previous reading offset no longer fits.` : 'Index retained. ChatGPT could not reload your original message; position restored approximately.');
-        else if (task.cancelled) setStatus(`Scan cancelled. ${index.length} messages retained; index may be partial.`);
-        else if (complete) setStatus(`Full page scan finished · ${index.length} messages.`);
-      }
-      finishOperation(task);
+      try {
+        if (ownsOperation(task)) {
+          const restored = await restorePosition(scroller, task.position, task);
+          if (ownsOperation(task)) {
+            if (!restored) setStatus(task.restoreClamped ? `${task.cancelled ? 'Scan cancelled' : complete ? `Full page scan finished · ${index.length} messages` : 'Index retained'}. Returned to your original message; its previous reading offset no longer fits.` : 'Index retained. ChatGPT could not reload your original message; position restored approximately.');
+            else if (task.cancelled) setStatus(`Scan cancelled. ${index.length} messages retained; index may be partial.`);
+            else if (complete) setStatus(`Full page scan finished · ${index.length} messages.`);
+          }
+        }
+      } finally { finishOperation(task); }
     }
   }
   function compatible(expected, actual) {
@@ -675,64 +919,85 @@
     const id = canonicalId(target.id);
     if (id === target.id) return target;
     const current = index.find((message) => message.id === id);
-    return { ...target, id, stable: current?.stable ?? target.stable };
+    return { ...target, id, stable: current?.stable ?? target.stable, messageId: current?.messageId ?? target.messageId };
   }
-  function resolve(id, expected) {
-    const observed = scan(), canonical = canonicalId(id), target = canonicalTarget(expected);
+  function findObserved(observed, id, expected) {
+    const canonical = canonicalId(id), target = canonicalTarget(expected);
     return observed.find((message) => message.id === canonical && message.element.isConnected && (!target || (compatible(target, message) && (target.stable || target.element === message.element) && (target.messageId || target.element === message.element || target.text === message.text))));
   }
-  async function align(message, task) {
-    const scroller = message.scroller;
+  function resolve(id, expected) { return findObserved(scan(), id, expected); }
+  function moveToMessage(message, offset) {
+    const { scroller, element } = message;
+    move(scroller, C.scrollPosition(scroller) + element.getBoundingClientRect().top - C.viewport(scroller).top - offset);
+  }
+  function atMessageOffset(message, offset) {
+    if (!message) return false;
+    const { scroller, element } = message;
+    const rect = element.getBoundingClientRect(), view = C.viewport(scroller), metrics = C.scrollMetrics(scroller);
+    const correction = rect.top - view.top - offset;
+    return rect.bottom > view.top && rect.top < view.bottom &&
+      (Math.abs(correction) <= 3 || (correction < 0 && metrics.position <= 3) || (correction > 0 && metrics.position >= metrics.maximum - 3));
+  }
+  async function align(message, task, offset = 76) {
     for (let attempt = 0; attempt < 4; attempt++) {
       if (cancelled(task)) return null;
       const current = resolve(message.id, message);
-      if (!current) return null;
-      const view = C.viewport(scroller);
-      move(scroller, C.scrollPosition(scroller) + current.element.getBoundingClientRect().top - view.top - 76);
-      await delay(140);
-      const verified = resolve(message.id, message);
-      if (!verified) return null;
-      const rect = verified.element.getBoundingClientRect();
-      const actualView = C.viewport(scroller);
-      if (rect.top >= actualView.top - 2 && rect.top < actualView.bottom - 12 && rect.bottom > actualView.top) return verified;
+      if (!current || cancelled(task)) return null;
+      const scroller = current.scroller;
+      moveToMessage(current, offset);
+      const state = await settleViewport(scroller, task, {
+        maximum: 4200, allowPending: true,
+        accept: ({ inView }) => Boolean(findObserved(inView, message.id, message))
+      });
+      if (cancelled(task)) return null;
+      const verified = findObserved(state.inView, message.id, message);
+      if (!state.settled || !verified) return null;
+      if (atMessageOffset(verified, offset)) return verified;
     }
     return null;
   }
-  async function seek(target, scroller, task) {
-    target = canonicalTarget(target);
-    if (cancelled(task) || !target.stable) return null;
-    // Try the observed coordinate first, then a bounded sweep if ChatGPT reflowed.
-    move(scroller, target.y - 76);
-    await settleViewport(scroller, task, { minimum: 260, maximum: 3000 });
-    let found = resolve(target.id, target);
-    if (found) return found;
-    const maximum = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
-    const expected = Math.max(0, Math.min(maximum, target.y - 76));
-    for (let radius = 1; radius <= 5; radius++) {
-      for (const sign of [-1, 1]) {
-        if (cancelled(task) || operationTimeLeft(task) <= 0) return null;
-        move(scroller, expected + sign * radius * scroller.clientHeight * .7);
-        await settleViewport(scroller, task, { minimum: 160, maximum: 2500 });
-        found = resolve(target.id, target);
-        if (found) return found;
-      }
-    }
-    for (let pass = 0; pass < 3 && operationTimeLeft(task) > 0; pass++) {
-      const head = await hydrateHead(scroller, task, { maximum: Math.min(20000, operationTimeLeft(task)) });
+  function windowDirection(target, inView) {
+    const ranks = new Map(index.map((message, position) => [message.id, position]));
+    const wanted = ranks.get(canonicalId(target.id));
+    if (wanted === undefined) return 0;
+    const neighbors = inView.filter((message) => message.stable && !message.transient).map((message) => ranks.get(message.id)).filter(Number.isFinite);
+    if (!neighbors.length) return 0;
+    if (neighbors.every((position) => position < wanted)) return 1;
+    if (neighbors.every((position) => position > wanted)) return -1;
+    return 0;
+  }
+  async function seekLoaded(target, scroller, task, offset = 76, hints = []) {
+    if (!target.stable || !scroller.isConnected) return null;
+    let maximum = C.scrollMetrics(scroller).maximum, low = 0, high = maximum;
+    const tried = [];
+    let nearby = [];
+    for (let step = 0; step < 18 && !cancelled(task) && operationTimeLeft(task) > 0; step++) {
+      const latest = index.find((message) => message.id === canonicalId(target.id));
+      const guess = latest?.scroller === scroller ? latest.y : target.y;
+      const candidates = [guess - offset, ...hints, ...nearby, (low + high) / 2, low, high];
+      const destination = candidates.filter(Number.isFinite).map((position) => Math.max(0, Math.min(maximum, position)))
+        .filter((position) => position >= low && position <= high)
+        .find((position) => !tried.some((previous) => Math.abs(previous - position) < 3));
+      if (destination === undefined) break;
+      tried.push(destination);
+      move(scroller, destination);
+      const state = await settleViewport(scroller, task, { minimum: 500, maximum: 3000, target });
       if (cancelled(task)) return null;
-      for (let step = 0; step < 3000 && operationTimeLeft(task) > 0; step++) {
-        const state = await settleViewport(scroller, task);
-        if (cancelled(task)) return null;
-        found = resolve(target.id, target);
-        if (found) return found;
-        setStatus(`Locating exact message… ${index.findIndex((message) => message.id === canonicalId(target.id)) + 1}. Cancel to return to your place.`);
-        const bottom = scroller.scrollHeight - scroller.clientHeight;
-        if (C.scrollPosition(scroller) >= bottom - 3) break;
-        const before = C.scrollPosition(scroller);
-        move(scroller, scanDestination(scroller, state.messages));
-        if (!await waitForScan(task, 160) || Math.abs(C.scrollPosition(scroller) - before) < 2) return null;
+      const found = findObserved(state.messages, target.id, target);
+      if (found) return found;
+      const metrics = C.scrollMetrics(scroller);
+      if (Math.abs(metrics.maximum - maximum) > 2) {
+        maximum = metrics.maximum; low = 0; high = maximum; tried.length = 0; nearby = [];
       }
-      if (head.settled) return null;
+      // A virtual window can move far from its old coordinates after reflow.
+      // Use the identities that really mounted to narrow the search window.
+      const direction = state.settled ? windowDirection(target, state.inView) : 0;
+      const stride = Math.max(24, C.viewport(scroller).height * .45);
+      if (direction > 0) low = Math.max(low, Math.min(maximum, metrics.position + stride));
+      else if (direction < 0) high = Math.min(high, Math.max(0, metrics.position - stride));
+      if (low > high) break;
+      if (direction) nearby = [];
+      else if (!nearby.length) nearby = [metrics.position - stride, metrics.position + stride, metrics.position - 2 * stride, metrics.position + 2 * stride];
     }
     return null;
   }
@@ -747,41 +1012,71 @@
     highlightTimer = setTimeout(() => { target.hidden = true; }, 2200);
   }
   async function jump(id) {
-    if (operation) { toast('Finish or cancel the current scan first.'); return; }
     const originSession = session, originRoute = location.pathname + location.search;
     const stored = index.find((message) => message.id === canonicalId(id)); if (!stored) return;
-    let target = { ...stored };
-    scan();
-    target = canonicalTarget(target);
+    const observed = scan();
+    const target = canonicalTarget(stored);
     if (originSession !== session || originRoute !== route || !index.some((message) => message.id === target.id)) return;
-    const task = startOperation('jump'); if (!task) return;
-    const scroller = mainScroller(), position = capturePosition(scroller);
+    const scroller = mainScroller(), task = startOperation('jump', scroller);
+    task.targetId = target.id;
+    const firstPrompt = index.find((message) => message.role === 'user')?.id;
     let success = false;
     try {
-      const found = resolve(target.id, target) || await seek(target, scroller, task);
-      const exact = found ? await align(found, task) : null;
+      let found = findObserved(observed, target.id, target);
+      if (!found) {
+        setStatus('Locating the selected message…');
+        found = await seekLoaded(target, scroller, task);
+      }
+      if (cancelled(task)) return;
+      let exact = null;
+      if (found) {
+        moveToMessage(found, 76);
+        const current = resolve(target.id, target);
+        exact = atMessageOffset(current, 76) ? current : current && await align(current, task);
+      }
+      if (found && !exact && !cancelled(task) && operationTimeLeft(task) > 0) {
+        const reloaded = await seekLoaded(target, scroller, task);
+        exact = reloaded && await align(reloaded, task);
+      }
       if (exact && !cancelled(task)) {
         success = true; activeId = exact.id;
-        jumpPin = { id:exact.id, scroller:exact.scroller, position:C.scrollPosition(exact.scroller) };
+        const metrics = C.scrollMetrics(exact.scroller), view = C.viewport(exact.scroller);
+        const nearHead = exact.stable && (exact.id === canonicalId(firstPrompt) || metrics.position <= view.height);
+        const now = Date.now(), prior = task.arrival;
+        const inherited = prior?.scroller === exact.scroller && prior.until > now;
+        const loadingOlder = C.historyLoading(exact.scroller, { olderOnly: true }) || Boolean(inherited && prior.loadingOlder);
+        jumpPin = {
+          id:exact.id, target:{ ...exact }, scroller:exact.scroller, position:metrics.position, maximum:metrics.maximum,
+          y:exact.y, offset:exact.element.getBoundingClientRect().top - view.top,
+          until:Math.max(now + (nearHead || loadingOlder ? 6500 : 650), inherited ? prior.until : 0),
+          loadingOlder
+        };
         render(); highlight(exact);
         setStatus(`At message ${index.findIndex((message) => message.id === exact.id) + 1} · ${exact.role === 'user' ? 'Your prompt' : 'ChatGPT reply'}.`);
         if (innerWidth < 700) setOpen(false);
       } else if (!cancelled(task)) {
-        setStatus('Exact message could not be loaded. Refresh the index or index full chat again.');
-        toast('ChatGPT did not load that exact message. Your place will be restored.');
+        setStatus('ChatGPT did not load that exact message. Returning to your place.');
       }
     } catch (error) {
-      setStatus('The page changed during navigation. Refresh the index and try again.');
+      if (ownsOperation(task)) setStatus('The page changed during navigation. Refresh the index and try again.');
       console.warn('[GPT-Navigator] Jump interrupted:', error.message);
     } finally {
-      if (!success) await restorePosition(scroller, position, task);
-      if (task.cancelled && task.session === session) setStatus('Navigation cancelled. Returned to your place.');
-      finishOperation(task);
+      try {
+        if (!success && ownsOperation(task)) {
+          const restored = await restorePosition(scroller, task.position, task);
+          if (ownsOperation(task)) {
+            const result = task.cancelled ? 'Navigation cancelled.' : 'Exact message could not be loaded.';
+            setStatus(`${result} ${restored || task.restoreClamped ? 'Returned to your original message.' : 'Restored an approximate scroll position.'}`);
+            if (!open) toast(status.textContent);
+          }
+        }
+      } finally { finishOperation(task); }
     }
   }
   function adjacent(direction) {
     scan();
-    const current = index.findIndex((message) => message.id === canonicalId(activeId));
+    const pending = operation?.kind === 'jump' && !operation.cancelled && operation.session === session ? operation.targetId : null;
+    const current = index.findIndex((message) => message.id === canonicalId(pending || activeId));
     let cursor = current < 0 ? (direction > 0 ? -1 : index.length) : current;
     for (cursor += direction; cursor >= 0 && cursor < index.length; cursor += direction) {
       if (index[cursor].role === 'user') { jump(index[cursor].id); return; }
@@ -817,7 +1112,7 @@
   list.addEventListener('click', (event) => { const button = event.target.closest('.message'); if (button) jump(button.dataset.id); });
   $('.previous').addEventListener('click', () => adjacent(-1));
   $('.next').addEventListener('click', () => adjacent(1));
-  $('.index').addEventListener('click', () => { if (operation) { operation.cancelled = true; setStatus('Cancelling… returning to your place.'); } else fullScan(); });
+  $('.index').addEventListener('click', () => { if (operation?.kind === 'index') { operation.cancelled = true; setStatus('Cancelling… returning to your place.'); } else fullScan(); });
   $('.refresh').addEventListener('click', () => { reset(); scan(); render(); });
   $('select').addEventListener('change', (event) => { theme = event.target.value; applyTheme(); savePreferences(); });
   shadow.addEventListener('keydown', (event) => {
@@ -829,29 +1124,51 @@
       event.preventDefault(); event.stopPropagation();
     }
   });
+  document.addEventListener('click', observeNativeBranchAction, true);
+  document.addEventListener('submit', (event) => {
+    if (event.isTrusted && event.target instanceof Element) confirmNativeEdit(event.target.closest(nativeTurnSelector));
+  }, true);
   document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && nativeBranch?.kind === 'redo' && !nativeBranch.confirmed) nativeBranch = null;
+    if (!event.repeat && ['Enter', ' '].includes(event.key) && nativeBranch?.kind === 'redo' && !nativeBranch.confirmed) observeNativeBranchAction(event);
     if (event.repeat || C.isEditable(event)) return;
     if (event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey && ['ArrowUp','ArrowDown'].includes(event.code)) {
       event.preventDefault(); event.stopPropagation();
       adjacent(event.code === 'ArrowUp' ? -1 : 1);
     }
+    if (['ArrowUp','ArrowDown','PageUp','PageDown','Home','End','Space'].includes(event.code) && !event.composedPath().includes(host) && !(event.ctrlKey && event.shiftKey)) jumpPin = null;
   }, true);
   document.addEventListener('scroll', (event) => {
     if (event.composedPath().includes(host)) return;
-    $('.target').hidden = true;
+    if (!jumpPin || Math.abs(C.scrollPosition(jumpPin.scroller) - jumpPin.position) > 2) $('.target').hidden = true;
     if (!scrollTimer) scrollTimer = setTimeout(() => { scrollTimer = null; scan(); }, 120);
   }, true);
   document.addEventListener('wheel', (event) => {
-    if (operation && !restoring && !event.composedPath().includes(host)) { operation.cancelled = true; setStatus('Scan cancelled by scrolling. Returning to your place.'); }
+    if (event.composedPath().includes(host)) return;
+    jumpPin = null;
+    if (operation && !operation.restoring) {
+      operation.cancelled = true;
+      setStatus(operation.kind === 'index' ? 'Scan cancelled by scrolling. Returning to your place.' : 'Navigation cancelled by scrolling.');
+    }
   }, { capture: true, passive: true });
+  document.addEventListener('pointerdown', (event) => {
+    if (!event.composedPath().includes(host)) jumpPin = null;
+    if (nativeBranch?.kind === 'redo' && !nativeBranch.confirmed &&
+        event.composedPath().some((node) => node instanceof Element && node.matches('[role="menu"]'))) observeNativeBranchAction(event);
+    if (nativeBranch?.kind === 'redo' && !nativeBranch.confirmed && event.target instanceof Element &&
+        !nativeBranch.trigger?.contains(event.target) &&
+        !event.composedPath().some((node) => node instanceof Element && node.matches('[role="menu"]'))) nativeBranch = null;
+  }, true);
   document.addEventListener('touchstart', (event) => {
-    if (operation && !restoring && !event.composedPath().includes(host)) operation.cancelled = true;
+    if (event.composedPath().includes(host)) return;
+    jumpPin = null;
+    if (operation && !operation.restoring) operation.cancelled = true;
   }, { capture: true, passive: true });
   const observer = new MutationObserver((mutations) => {
     if (mutations.every((mutation) => mutation.target === host || host.contains(mutation.target))) return;
     scheduleScan();
   });
-  observer.observe(document.documentElement, { subtree:true, childList:true, characterData:true, attributes:true, attributeFilter:['class','data-theme','data-turn-key','data-message-id','data-chatgpt-search-message-ids','data-chatgpt-search-unit-key','data-message-author-role','aria-hidden'] });
+  observer.observe(document.documentElement, { subtree:true, childList:true, characterData:true, attributes:true, attributeFilter:['class','data-theme','data-turn-key','data-testid','data-message-id','data-chatgpt-search-message-ids','data-chatgpt-search-unit-key','data-message-author-role','hidden','aria-hidden','aria-busy'] });
   const themeObserver = new MutationObserver(applyTheme);
   themeObserver.observe(document.documentElement, { attributes:true, attributeFilter:['class','style','data-theme'] });
   themeObserver.observe(document.body, { attributes:true, attributeFilter:['class','style','data-theme'] });
