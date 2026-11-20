@@ -3,6 +3,12 @@
   if (document.getElementById('conversation-compass-host')) return;
   const C = globalThis.ConversationCompassCore;
   if (!C) return;
+  const I = globalThis.GPTNavI18n;
+  const version = chrome.runtime.getManifest().version;
+  let language = 'auto';
+  const t = (key, values) => I.translate(language, key, values);
+  const isMac = /mac/iu.test(navigator.userAgentData?.platform || navigator.platform || '');
+  const modifier = isMac ? '⌘' : 'Ctrl';
   const host = document.createElement('div');
   host.id = 'conversation-compass-host';
   host.style.cssText = 'all:initial;position:fixed;inset:0;pointer-events:none;z-index:2147483600;';
@@ -22,9 +28,18 @@
       button:focus-visible,input:focus-visible,select:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
       .glyph { color:var(--accent); width:20px; height:20px; flex:0 0 20px; display:block; }
       .count { background:var(--tint); color:var(--accent); border-radius:6px; padding:1px 6px; font-size:11px; font-variant-numeric:tabular-nums; }
-      .panel { pointer-events:auto; position:fixed; right:16px; top:80px; bottom:20px; width:354px; max-height:800px; max-width:calc(100vw - 24px); display:flex; flex-direction:column; border:1px solid var(--line); border-radius:18px; background:var(--bg); box-shadow:var(--shadow); overflow:hidden; }
+      .panel { pointer-events:auto; position:fixed; right:16px; top:80px; bottom:20px; width:354px; max-height:800px; max-width:calc(100vw - 24px); display:flex; flex-direction:column; border:1px solid var(--line); border-radius:18px; background:var(--bg); box-shadow:var(--shadow); overflow:auto; overscroll-behavior:contain; scrollbar-width:thin; }
       header { display:flex; gap:10px; align-items:center; padding:17px 17px 12px; }
       .brand { flex:1; min-width:0; }
+      .brand-title { display:flex; flex-wrap:wrap; align-items:center; gap:6px; }
+      .update-badge { border:1px solid var(--accent); border-radius:5px; background:var(--tint); color:var(--text); padding:2px 5px; font-size:10px; line-height:1.3; font-weight:700; }
+      .update-badge:hover { background:var(--hover); }
+      .update-wrap { display:inline-flex; }
+      .update-tooltip { position:absolute; top:55px; left:16px; right:16px; z-index:4; background:var(--surface); border:1px solid var(--line); border-radius:10px; box-shadow:var(--shadow); padding:12px 14px; font-size:12px; font-weight:400; line-height:1.5; max-height:calc(100% - 75px); overflow:auto; overscroll-behavior:contain; scrollbar-width:thin; }
+      .update-tooltip strong { display:block; font-size:13px; }
+      .update-tooltip ul { margin:8px 0; padding-left:17px; }
+      .update-tooltip li { margin:5px 0; }
+      .update-tooltip p { margin:8px 0 0; color:var(--muted); font-size:11px; }
       h2 { font-size:16px; line-height:1.2; margin:0; letter-spacing:-.3px; font-weight:750; }
       .eyebrow { margin:4px 0 0; color:var(--muted); font-size:11px; }
       .icon { border:1px solid transparent; background:transparent; border-radius:8px; width:30px; height:30px; font-size:20px; display:grid; place-items:center; padding:0; }
@@ -63,7 +78,8 @@
       .index:hover { border-color:var(--accent); }
       .utility { background:var(--surface); border:1px solid var(--line); border-radius:8px; padding:7px 10px; font-size:12px; }
       .status { margin:0; padding:0 17px 10px; font-size:11px; line-height:1.5; color:var(--muted); min-height:27px; }
-      .settings { display:flex; align-items:center; justify-content:space-between; padding:9px 16px; border-top:1px solid var(--line); color:var(--muted); font-size:11px; gap:8px; }
+      .settings { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; padding:9px 16px; border-top:1px solid var(--line); color:var(--muted); font-size:11px; gap:8px; }
+      .settings label { display:flex; align-items:center; gap:5px; }
       .settings select { max-width:116px; background:var(--surface); color:var(--text); border:1px solid var(--line); padding:4px 6px; border-radius:6px; font-size:11px; }
       .hint { font-size:10px; }
       .target { position:fixed; pointer-events:none; border:2px solid var(--accent); background:color-mix(in srgb,var(--accent) 5%,transparent); border-radius:8px; box-shadow:0 0 0 4px color-mix(in srgb,var(--accent) 15%,transparent); }
@@ -89,11 +105,12 @@
       .rail[data-expanded="true"] .prompt-bar:hover { background:var(--hover); }
       .rail[data-expanded="true"] .prompt-bar[aria-current="true"] { background:var(--tint); }
       @media(max-width:620px) { .panel { top:65px; right:12px; bottom:12px; width:min(354px,calc(100vw - 24px)); } .rail { right:12px; } }
+      @media(max-height:575px) { .panel { top:8px; bottom:8px; } .list { min-height:54px; } }
       @media(prefers-reduced-motion:no-preference) { .message,.filter { transition:background .12s; } .rail { transition:width .16s ease,background .12s; } }
     </style>
     <nav class="rail" data-expanded="false" aria-label="Prompt navigation bars" hidden><div class="rail-bars"></div></nav>
     <section id="compass-panel" class="panel" aria-label="Conversation contents" hidden>
-      <header><svg class="glyph" viewBox="0 0 16 16" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-linecap="round"><path d="M6 3.5H12 M6 5.5H12 M6 7.5H12 M6 11.5H12" stroke-width="1" opacity=".6"/><path d="M4 9.5H12" stroke-width="1.25"/></g></svg><div class="brand"><h2>GPT-Navigator</h2><p class="eyebrow">Your place in a long conversation</p></div><span class="count">0</span><button class="icon close" type="button" aria-label="Close full navigator" title="Close full navigator (Escape)">×</button></header>
+      <header><svg class="glyph" viewBox="0 0 16 16" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-linecap="round"><path d="M6 3.5H12 M6 5.5H12 M6 7.5H12 M6 11.5H12" stroke-width="1" opacity=".6"/><path d="M4 9.5H12" stroke-width="1.25"/></g></svg><div class="brand"><div class="brand-title"><h2>GPT-Navigator</h2><span class="update-wrap" hidden><button class="update-badge" type="button" aria-describedby="update-details" hidden></button><span class="update-tooltip" id="update-details" role="tooltip" hidden><strong></strong><ul></ul><p></p></span></span></div><p class="eyebrow">Your place in a long conversation</p></div><span class="count">0</span><button class="icon close" type="button" aria-label="Close full navigator" title="Close full navigator (Escape)">×</button></header>
       <div class="search-wrap"><span aria-hidden="true">⌕</span><input type="search" aria-label="Search messages" placeholder="Find a word, phrase, or topic…" autocomplete="off" spellcheck="false"></div>
       <div class="filters" role="group" aria-label="Message filter"><button class="filter" data-filter="all" type="button" aria-pressed="true">All messages</button><button class="filter" data-filter="user" type="button" aria-pressed="false">My prompts</button><button class="filter" data-filter="assistant" type="button" aria-pressed="false">Replies</button></div>
       <div class="summary"><strong class="total">0 messages found</strong><span class="coverage">Page index</span></div>
@@ -101,25 +118,152 @@
       <div class="controls"><button class="nav previous" type="button" title="Previous prompt (Ctrl+Shift+Up)">↑ Previous prompt</button><button class="nav next" type="button" title="Next prompt (Ctrl+Shift+Down)">↓ Next prompt</button></div>
       <div class="index-row"><button class="index" type="button">Index full chat</button><button class="utility refresh" type="button" title="Clear the index and rescan the page">Refresh</button></div>
       <p class="status" role="status" aria-live="polite">Only messages loaded by ChatGPT are listed. Index full chat to find older turns.</p>
-      <footer class="settings"><label>Theme <select aria-label="Navigator theme"><option value="auto">Match ChatGPT</option><option value="dark">Dark</option><option value="light">Light</option></select></label><span class="hint" title="Change this shortcut in your browser's extension shortcut settings">Ctrl+Shift+Y</span></footer>
+      <footer class="settings"><label><span class="theme-label">Theme</span><select class="theme" aria-label="Navigator theme"><option value="auto">Match ChatGPT</option><option value="dark">Dark</option><option value="light">Light</option></select></label><label><span class="language-label">Language</span><select class="language" aria-label="Language"><option value="auto">Automatic</option><option value="en" lang="en">English</option><option value="ko" lang="ko">한국어</option><option value="ja" lang="ja">日本語</option><option value="zh-CN" lang="zh-CN">简体中文</option><option value="zh-TW" lang="zh-TW">繁體中文</option></select></label><span class="hint"></span></footer>
     </section>
     <div class="target" hidden></div><div class="toast" role="status" hidden></div>`;
   document.documentElement.appendChild(host);
   const $ = (selector) => shadow.querySelector(selector);
   const panel = $('.panel'), list = $('.list'), search = $('input'), status = $('.status');
+  let promptButtons = new Map(), messageButtons = new Map();
+  let markedPrompt = null, markedMessage = null, tabbablePrompt = null;
   let index = [], visible = [], fallbackIds = new WeakMap(), sequence = 0;
   const identityAliases = new Map();
-  const supersededResponses = new Set();
-  let activeId = null, filter = 'all', theme = 'auto', route = location.pathname + location.search;
+  const regeneratedReplies = new Map();
+  let activeId = null, filter = 'all', theme = 'auto', route = conversationRoute();
+  const outgoingRoutes = new Map();
   let root = C.conversationRoot(), scanTimer = null, scrollTimer = null, operation = null;
   let complete = false, open = false, signature = '', toastTimer = null, highlightTimer = null;
   let session = 0;
+  let historyRequest = null, historyAttempted = false, historyRetried = false;
+  let historyById = null;
+  let pendingHistory = null;
   let jumpPin = null;
   let knownTail = null, pendingTail = null, nativeBranch = null;
   let completedHeadId = null, railExpanded = false, railTimer = null, railSignature = '', suppressRailFocus = false, touchReveal = false, ignoreTouchClick = false;
+  let statusMessage = [['initial']], toastMessage = [], lastWheelAt = -Infinity;
+  let updateVersion = '', seenVersion = '';
+  let releaseNotes = null, loadingReleaseNotes = false;
+  let updateStateRevision = 0;
+  let preferencesRevision = 0, shortcutRevision = 0, toggleShortcut = '', returnFocus = null;
+  async function loadReleaseNotes() {
+    if (releaseNotes || loadingReleaseNotes) return;
+    loadingReleaseNotes = true;
+    try {
+      const result = await chrome.runtime.sendMessage({ type:'compass:get-release-notes' });
+      if (result?.ok) {
+        releaseNotes = result.notes;
+        renderReleaseNotes();
+      }
+    } catch { /* The extension may have been reloaded. Retry on the next hover. */ }
+    finally { loadingReleaseNotes = false; }
+  }
+  function renderReleaseNotes() {
+    const locale = language === 'auto' ? I.browserLanguage() : language;
+    const lines = releaseNotes?.[locale] ?? releaseNotes?.en;
+    const list = $('.update-tooltip ul');
+    list.replaceChildren();
+    if (Array.isArray(lines)) {
+      for (const line of lines) {
+        if (typeof line !== 'string' || !line.trim()) continue;
+        const item = document.createElement('li');
+        item.textContent = line;
+        list.append(item);
+      }
+    }
+    list.hidden = !list.childElementCount;
+  }
+  function renderUpdateBadge() {
+    const badge = $('.update-badge');
+    badge.hidden = updateVersion !== version || seenVersion === version;
+    badge.textContent = t('newBadge');
+    $('.update-wrap').hidden = badge.hidden;
+    if (badge.hidden) $('.update-tooltip').hidden = true;
+    badge.setAttribute('aria-label', t('ackUpdate', { version }));
+    $('.update-tooltip strong').textContent = t('updateHeading', { version });
+    $('.update-tooltip p').textContent = t('dismissUpdate');
+    if (!badge.hidden) {
+      renderReleaseNotes();
+      void loadReleaseNotes();
+    }
+  }
+  function translated(parts) { return parts.map(([key, values]) => t(key, values)).join(' '); }
+  function observeSearchText(message, record) {
+    if (!record?.text || message.placeholder || record.renderedText === message.text) return;
+    if (record.renderedText !== undefined) {
+      // An existing ID can be reused for an in-place replacement. Collapsing,
+      // expanding or continuing the saved text should keep its search coverage.
+      const prose = text => C.normalize(text.replace(/!?\[([^\]]*)\]\([^)]+\)/gu, '$1')
+        .replace(/[*_`~#>|]/gu, '').replace(/(?:…|\.{3})\s*$/u, ''));
+      const saved = prose(record.text), current = prose(message.text);
+      record.textReplaced = !current || !(saved.includes(current) || current.includes(saved));
+    }
+    record.renderedText = message.text;
+  }
+  function historyText(message) {
+    const record = historyById?.get(message.messageId);
+    return record && !record.textReplaced ? record.text : '';
+  }
+  function messageText(message) {
+    if (!message.placeholder) return message.text;
+    return historyText(message) || t(message.role === 'user' ? 'attachment' : 'nonText');
+  }
+  function matchingText(message, needle) {
+    const displayed = messageText(message);
+    if (!needle || displayed.toLocaleLowerCase().includes(needle)) return displayed;
+    // A collapsed bubble may omit searchable text. Render the preview from the
+    // same source that matched so the highlighted words are actually visible.
+    const full = historyText(message);
+    return full && full !== displayed && full.toLocaleLowerCase().includes(needle) ? full : null;
+  }
+  function applyLanguage() {
+    host.lang = language === 'auto' ? I.browserLanguage() : language;
+    for (const [selector, key] of Object.entries({ '.eyebrow':'tagline', '[data-filter="all"]':'all', '[data-filter="user"]':'prompts', '[data-filter="assistant"]':'replies', '.refresh':'refresh', '.theme-label':'theme', '.language-label':'language', '.theme option[value="auto"]':'match', '.theme option[value="dark"]':'dark', '.theme option[value="light"]':'light', '.language option[value="auto"]':'automatic' })) $(selector).textContent = t(key);
+    for (const [selector, key] of Object.entries({ '.rail':'rail', '.panel':'contents', '.close':'close', 'input':'search', '.filters':'filter', '.list':'messagesOrder', '.theme':'themeLabel', '.language':'language' })) $(selector).setAttribute('aria-label', t(key));
+    search.placeholder = t('searchHint');
+    $('.close').title = `${t('close')} (Escape)`;
+    $('.refresh').title = t('refreshHint');
+    $('.hint').title = t('shortcutHint');
+    renderShortcut();
+    $('.previous').textContent = `↑ ${t('previous')}`;
+    $('.next').textContent = `↓ ${t('next')}`;
+    $('.previous').title = `${t('previous')} (${modifier}+Shift+↑)`;
+    $('.next').title = `${t('next')} (${modifier}+Shift+↓)`;
+    $('.language').value = language;
+    status.textContent = translated(statusMessage);
+    $('.toast').textContent = translated(toastMessage);
+    renderUpdateBadge();
+    railSignature = '';
+    render();
+  }
 
-  function savePreferences() {
-    try { chrome.storage.local.set({ compassPreferences: { theme, filter } }).catch(() => {}); } catch { /* extension was reloaded */ }
+  function savePreferences(patch) {
+    preferencesRevision++;
+    try { chrome.runtime.sendMessage({ type:'compass:save-preferences', patch }).catch(() => {}); } catch { /* extension was reloaded */ }
+  }
+  function applyPreferences(prefs = {}) {
+    const previousLanguage = language;
+    theme = ['auto','dark','light'].includes(prefs.theme) ? prefs.theme : 'auto';
+    filter = ['all','user','assistant'].includes(prefs.filter) ? prefs.filter : 'all';
+    language = ['auto', ...I.locales].includes(prefs.language) ? prefs.language : 'auto';
+    $('.theme').value = theme;
+    applyTheme();
+    if (language !== previousLanguage) applyLanguage();
+    else render();
+  }
+  function renderShortcut() {
+    $('.hint').textContent = toggleShortcut;
+    $('.hint').hidden = !toggleShortcut;
+  }
+  async function refreshShortcut() {
+    const revision = ++shortcutRevision;
+    let shortcut = '';
+    try {
+      const response = await chrome.runtime.sendMessage({ type:'compass:get-shortcut' });
+      if (response?.ok && typeof response.shortcut === 'string') shortcut = response.shortcut;
+    } catch { /* An unavailable or unassigned shortcut has no hint. */ }
+    if (revision !== shortcutRevision) return;
+    toggleShortcut = shortcut;
+    renderShortcut();
   }
   function applyTheme() {
     let actual = theme;
@@ -136,51 +280,102 @@
     }
     host.setAttribute('data-theme', actual);
   }
-  function setStatus(message) { status.textContent = message; }
-  function toast(message) {
-    $('.toast').textContent = message;
+  function setStatus(key, values) { statusMessage = Array.isArray(key) ? key : [[key, values]]; status.textContent = translated(statusMessage); }
+  function toast(key, values) {
+    toastMessage = Array.isArray(key) ? key : [[key, values]];
+    $('.toast').textContent = translated(toastMessage);
     $('.toast').hidden = false;
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => { $('.toast').hidden = true; }, 3500);
   }
   function setOpen(value, focus = false) {
+    const restoreFocus = !value && panel.contains(shadow.activeElement);
+    if (value && !open) returnFocus = focusedElement();
     open = value;
     panel.hidden = !value;
+    if (!value) {
+      list.replaceChildren();
+      messageButtons.clear();
+      markedMessage = null;
+    }
     collapseRail();
     $('.rail').hidden = value || !index.some((message) => message.role === 'user');
-    if (value) { scan(); render(); if (focus) search.focus(); }
-    else if (shadow.activeElement) {
+    if (value) { scan(); render(); refreshShortcut(); if (focus) search.focus(); }
+    else if (restoreFocus) {
       suppressRailFocus = true;
       const button = $('.prompt-bar[aria-current="true"]') || $('.prompt-bar');
-      button?.focus({ preventScroll:true });
+      const composer = document.querySelector('#prompt-textarea, main [contenteditable="true"][role="textbox"], main textarea');
+      if (![button, returnFocus, composer].some(focusAvailable)) {
+        const fallback = document.body;
+        const tabindex = fallback.getAttribute('tabindex');
+        fallback.setAttribute('tabindex', '-1');
+        fallback.focus({ preventScroll:true });
+        if (tabindex === null) fallback.removeAttribute('tabindex');
+        else fallback.setAttribute('tabindex', tabindex);
+      }
       suppressRailFocus = false;
+      returnFocus = null;
     }
   }
-  function reset(message = 'Only messages loaded by ChatGPT are listed. Index full chat to find older turns.') {
+  function focusedElement() {
+    let element = document.activeElement;
+    while (element?.shadowRoot?.activeElement) element = element.shadowRoot.activeElement;
+    return element;
+  }
+  function focusAvailable(element) {
+    if (!element?.isConnected || element === document.body || element === document.documentElement || !element.getClientRects().length || element.matches(':disabled, [inert], [hidden]') || element.closest('[inert]')) return false;
+    element.focus({ preventScroll:true });
+    return focusedElement() === element;
+  }
+  function reset(message = 'initial') {
+    resetHistoryRead();
     session++;
     if (operation) operation.cancelled = true;
     index = []; visible = []; activeId = null; complete = false; signature = '';
-    completedHeadId = null; railSignature = ''; collapseRail();
+    completedHeadId = null; railSignature = null; collapseRail();
+    list.replaceChildren();
+    messageButtons.clear();
+    markedMessage = null;
+    if (message === 'newChat' || !returnFocus?.isConnected) returnFocus = null;
     jumpPin = null;
     knownTail = null; pendingTail = null; nativeBranch = null;
     fallbackIds = new WeakMap(); sequence = 0;
     identityAliases.clear();
-    supersededResponses.clear();
+    regeneratedReplies.clear();
     $('.target').hidden = true;
     setStatus(message);
     render();
   }
+  function conversationRoute() {
+    const chat = /^\/(?:g\/[^/]+\/)?c\/([a-z\d_-]+)\/?$/iu.exec(location.pathname);
+    return chat ? '/c/' + chat[1] : location.pathname;
+  }
   function checkContext() {
-    const currentRoute = location.pathname + location.search;
+    const currentRoute = conversationRoute();
     const currentRoot = C.conversationRoot();
     if (currentRoute !== route || currentRoot !== root) {
+      if (currentRoute !== route) {
+        outgoingRoutes.delete(currentRoute);
+        for (const outgoing of outgoingRoutes.values()) outgoing.firstPrompt = null;
+        if (visible.length) {
+          const firstPrompt = !route.startsWith('/c/') && currentRoute.startsWith('/c/') &&
+            visible.length === 1 && visible[0].role === 'user' ? visible[0].id : null;
+          outgoingRoutes.set(route, {
+            firstPrompt,
+            ids:new Set(index.filter(row => row.stable).map(row => row.id)),
+            nodes:new WeakMap(visible.map(row => [row.element, row.messageId || row.slot || row.role]))
+          });
+        }
+      }
       route = currentRoute;
       root = currentRoot;
-      reset('New conversation. Index full chat to include older messages.');
+      reset('newChat');
       search.value = '';
+      scheduleScan(0);
     }
   }
   function invalidateBranch(removed, tail = null) {
+    resetHistoryRead();
     index = index.filter((entry) => !removed.has(entry.id));
     session++;
     if (operation) operation.cancelled = true;
@@ -189,7 +384,7 @@
     complete = false; completedHeadId = null;
     knownTail = tail; pendingTail = null; nativeBranch = null;
     $('.target').hidden = true;
-    setStatus('Conversation branch changed. Removed messages from the previous branch.');
+    setStatus('branchChanged');
   }
   function uniqueSlots(messages) {
     const slots = new Map();
@@ -215,11 +410,80 @@
     if (!turn?.querySelector('textarea, [contenteditable="true"], [contenteditable="plaintext-only"]')) return;
     captureNativeBranch('edit', turn, true);
   }
+  function readMounted(byId = historyById) {
+    const mounted = C.readMessages(root, fallbackIds, () => ++sequence, byId);
+    if (!outgoingRoutes.size) return mounted;
+    let rows = mounted;
+    const tail = mountedTail(mounted);
+    for (const [oldRoute, outgoing] of outgoingRoutes) {
+      // During SPA navigation the URL may already identify B while A's old
+      // wrappers are still mounted. A recycled wrapper with a new ID is valid.
+      const retained = row => outgoing.nodes.get(row.element) === (row.messageId || row.slot || row.role);
+      if (outgoing.firstPrompt) {
+        // ChatGPT assigns a saved URL to a new conversation after the first
+        // prompt is already on screen. Keep it provisional until its reply
+        // arrives, the history verifies it, or a different transcript paints.
+        const first = mounted.find(row => row.id === outgoing.firstPrompt && retained(row));
+        if (!first) {
+          index = index.filter(row => row.id !== outgoing.firstPrompt);
+          outgoing.firstPrompt = null;
+        } else if (mounted.some(row => row.role === 'assistant' && adjacentNativeTurns(first, row))) {
+          outgoingRoutes.delete(oldRoute);
+          continue;
+        }
+      }
+      // A fork can reuse IDs. Fresh wrappers and a distinct terminal identify
+      // the new transcript even when history is unavailable. Examine the raw
+      // window for each transition so overlapping routes retire independently.
+      const replaced = mounted.length && !mounted.some(retained) &&
+        (mounted.every(row => !outgoing.ids.has(row.id)) || (tail && !outgoing.ids.has(tail)));
+      if (replaced) outgoingRoutes.delete(oldRoute);
+      else rows = rows.filter(row => byId?.has(row.messageId) || (outgoing.firstPrompt === row.id && retained(row)) ||
+        (!retained(row) && !outgoing.ids.has(row.id)));
+    }
+    return rows;
+  }
+  function rememberRegeneration(branch, replacement) {
+    const key = branch.predecessor?.id || branch.original.id;
+    const reply = regeneratedReplies.get(key) || { versions:new Set(), predecessor:branch.predecessor?.id };
+    reply.versions.add(branch.original.id);
+    reply.active = replacement?.stable ? replacement.id : null;
+    if (reply.active) reply.versions.add(reply.active);
+    regeneratedReplies.set(key, reply);
+  }
+  function displayedReplies(rows, update = false) {
+    if (!regeneratedReplies.size) return rows;
+    const present = new Set(rows.map(row => row.id)), hidden = new Set();
+    for (const reply of regeneratedReplies.values()) {
+      if (update && !reply.active && reply.predecessor) {
+        const pos = rows.findIndex(row => row.id === reply.predecessor);
+        if (pos !== -1) {
+          for (let i = pos + 1; i < rows.length && rows[i].role === 'assistant'; i++) {
+            if (rows[i].stable && !reply.versions.has(rows[i].id)) {
+              reply.active = rows[i].id;
+              reply.versions.add(reply.active);
+              break;
+            }
+          }
+        }
+      }
+      if (update && !present.has(reply.active)) {
+        const restored = [...reply.versions].filter(id => present.has(id));
+        if (restored.length === 1 && (reply.active || !responseGenerating(rows))) {
+          const old = index.findIndex(row => row.id === reply.active);
+          if (old >= 0) invalidateBranch(new Set(index.slice(old).map(row => row.id)));
+          reply.active = restored[0];
+        }
+      }
+      for (const id of reply.versions) if (id !== reply.active) hidden.add(id);
+    }
+    return rows.filter(row => !hidden.has(row.id));
+  }
   function captureNativeBranch(kind, turn, confirmed = kind === 'redo') {
     checkContext();
     if (!root?.contains(turn)) return;
     const role = kind === 'edit' ? 'user' : 'assistant';
-    const observed = C.readMessages(root, fallbackIds, () => ++sequence).filter((entry) => !supersededResponses.has(entry.id));
+    const observed = displayedReplies(readMounted());
     const current = observed.find((entry) => entry.turnElement === turn && entry.role === role);
     const original = index.find((entry) => entry.id === current?.id) ||
       index.find((entry) => entry.turnElement === turn && entry.role === role);
@@ -227,7 +491,7 @@
     if (cut < 0 || !original.stable) return;
     const predecessor = index[cut - 1];
     nativeBranch = {
-      kind, original:{ ...original }, predecessor:predecessor?.stable ? { ...predecessor } : null,
+      kind, original:{ ...original, turnElement:turn }, predecessor:predecessor?.stable ? { ...predecessor } : null,
       atStart:cut === 0,
       priorIds:new Set([...index, ...observed].map((entry) => entry.id)),
       removed:new Set(index.slice(cut).map((entry) => entry.id)),
@@ -241,31 +505,30 @@
     const button = event.target.closest('[role="menuitem"]') || event.target.closest('button, [role="button"]') ||
       path.find((node) => node instanceof Element && node.matches('[role="menuitem"], button, [role="button"]'));
     if (!button || button.closest('.markdown')) return;
-    const label = C.normalize(button.getAttribute('aria-label') || button.title || button.textContent).toLowerCase();
+    const testId = button.getAttribute('data-testid');
     const turn = button.closest(nativeTurnSelector);
     if (!turn) {
       if (nativeBranch?.kind === 'redo' && !nativeBranch.confirmed && Date.now() < nativeBranch.until &&
           (button.closest('[role="menu"]') || path.some((node) => node instanceof Element && node.matches('[role="menu"]'))) &&
-          /^(?:try again(?:\s|$)|use pro mode$|search the web$|submit$)/u.test(label)) {
+          (testId === 'regenerate-response-button' || C.nativeAction(button, 'redoChoice') || C.nativeAction(button, 'redo'))) {
         nativeBranch.confirmed = true;
         nativeBranch.until = Date.now() + 30000;
       }
       return;
     }
     if (!root?.contains(turn)) return;
-    const testId = button.getAttribute('data-testid');
-    if (/^(save|send|save and submit)$/.test(label)) { confirmNativeEdit(turn); return; }
-    if (label === 'cancel' && nativeBranch?.original.turnElement === turn) { nativeBranch = null; return; }
-    const kind = testId === 'edit-message-button' || /^(edit|edit message)$/.test(label) ? 'edit' :
-      testId === 'regenerate-response-button' || /^(regenerate( response)?|redo( response)?|retry|try again)$/.test(label) ? 'redo' : null;
+    if (C.nativeAction(button, 'save') || (button.matches('button[type="submit"]') && button.closest('form')?.querySelector('textarea, [contenteditable="true"]'))) { confirmNativeEdit(turn); return; }
+    if (C.nativeAction(button, 'cancel') && nativeBranch?.original.turnElement === turn) { nativeBranch = null; return; }
+    const kind = testId === 'edit-message-button' || C.nativeAction(button, 'edit') ? 'edit' :
+      testId === 'regenerate-response-button' || C.nativeAction(button, 'redo') ? 'redo' : null;
     if (!kind) return;
     const captured = captureNativeBranch(kind, turn, kind === 'redo' && !button.hasAttribute('aria-haspopup'));
     if (captured) captured.trigger = button;
   }
   function responseGenerating(messages) {
     return messages.some((entry) => entry.role === 'assistant' && entry.transient) ||
-      [...document.querySelectorAll('button[data-testid="stop-button"], button[aria-label="Stop generating"]')]
-        .some((stop) => stop.getClientRects().length && !stop.closest('[hidden], [aria-hidden="true"]'));
+      [...document.querySelectorAll('button[data-testid="stop-button"], button[aria-label]')]
+        .some((stop) => (stop.getAttribute('data-testid') === 'stop-button' || C.nativeAction(stop, 'stop')) && stop.getClientRects().length && !stop.closest('[hidden], [aria-hidden="true"]'));
   }
   function reconcileNativeBranch(observed, seen) {
     const branch = nativeBranch;
@@ -288,19 +551,32 @@
     }
     if (!replacement && branch.kind === 'redo' && predecessor?.role === 'user' && seen.has(predecessor.id) &&
         !seen.has(original.id) && responseGenerating(observed)) {
-      supersededResponses.add(original.id);
+      rememberRegeneration(branch, null);
       invalidateBranch(branch.removed);
       return true;
     }
     if (!replacement && branch.atStart) replacement = observed[0];
     if (!replacement || replacement.role !== original.role ||
         (replacement.id !== original.id && branch.priorIds.has(replacement.id))) return false;
+    if (replacement.id === original.id && branch.kind === 'redo' && responseGenerating(observed)) {
+      // The stop button often arrives before the new reply. Remove the
+      // abandoned suffix once, but keep watching for the actual replacement.
+      if (branch.removed.size > 1) {
+        const descendants = new Set(branch.removed);
+        descendants.delete(original.id);
+        invalidateBranch(descendants);
+        branch.removed = new Set([original.id]);
+        nativeBranch = branch;
+      }
+      branch.until = Date.now() + 30000;
+      return true;
+    }
     if (replacement.id === original.id && replacement.text === original.text && !responseGenerating(observed)) return false;
     const removed = new Set(branch.removed);
     if (replacement.id === original.id) removed.delete(original.id);
     else if (branch.kind === 'redo') {
       // Old and regenerated replies can coexist while ChatGPT switches them.
-      supersededResponses.add(original.id);
+      rememberRegeneration(branch, replacement);
       const previous = observed.findIndex((entry) => entry.id === original.id);
       if (previous >= 0) observed.splice(previous, 1);
       seen.delete(original.id);
@@ -401,26 +677,196 @@
       scheduleScan(450);
     }
   }
+  function resetHistoryRead() {
+    historyRequest?.abort();
+    historyRequest = null;
+    historyAttempted = false;
+    historyRetried = false;
+    historyById = null;
+    pendingHistory = null;
+  }
+  function historyCandidate(records) {
+    const keys = records.map(record => `message:${record.id}:${record.role}`);
+    const positions = new Map(keys.map((key, i) => [key, i]));
+    if (!keys.length || positions.size !== keys.length) throw new Error('Invalid history identities');
+    const byId = new Map(records.map(record => [record.id, record]));
+    return { records, keys, positions, byId };
+  }
+  function mountedTail(mounted) {
+    const last = mounted.at(-1);
+    if (!last?.messageId) return null;
+    const view = C.viewport(last.scroller), metrics = C.scrollMetrics(last.scroller);
+    const rect = last.element.getBoundingClientRect();
+    const atBottom = metrics.position >= metrics.maximum - 3 && rect.bottom > view.top && rect.top < view.bottom;
+    const atPhysicalEnd = Math.abs(last.y + rect.height - metrics.maximum - view.height) <= 4;
+    return atBottom || atPhysicalEnd ? last.id : null;
+  }
+  function historyTail(mounted) {
+    const physical = mountedTail(mounted);
+    if (physical) return physical;
+    const last = mounted.at(-1), turn = last?.turnElement;
+    if (!last?.messageId || !turn || !root.matches('[data-thread-find-target="conversation"]') ||
+        !root.contains(turn) || root === last.scroller) return null;
+
+    // ChatGPT can open at the latest prompt with the entire final reply already
+    // mounted below it. Controls belong to the turn, and the composer sits
+    // outside the transcript. Check the turn against the virtual list's end.
+    const end = turn.getBoundingClientRect().bottom;
+    const transcriptStyle = getComputedStyle(root);
+    const padding = parseFloat(transcriptStyle.paddingBottom) + parseFloat(transcriptStyle.borderBottomWidth);
+    const gap = parseFloat(transcriptStyle.rowGap) || 0;
+    for (let node = turn; node !== root; node = node.parentElement) {
+      const parent = node.parentElement;
+      let expectedEnd = end;
+      for (let next = node.nextElementSibling; next; next = next.nextElementSibling) {
+        const sibling = next.getBoundingClientRect();
+        if (sibling.height > 1) return null;
+        // The transcript's zero-height end sentinel occupies one real CSS
+        // gap. Count it only when its rendered position agrees with that gap.
+        if (parent === root && next.getAttribute('aria-hidden') === 'true' &&
+            next.getClientRects().length && Math.abs(sibling.top - expectedEnd - gap) <= 1) {
+          expectedEnd = sibling.bottom;
+        }
+      }
+      const box = parent.getBoundingClientRect();
+      if (!box.height) continue; // display:contents can wrap the virtual list.
+      // A virtualizer can reserve later turns with just a sized parent, even
+      // without a spacer sibling. Only the transcript's own padding is chrome.
+      if (Math.abs(box.bottom - (parent === root ? padding : 0) - expectedEnd) > 2) return null;
+    }
+    return last.id;
+  }
+  function acceptHistory(candidate, mounted, openingTail = null) {
+    if (outgoingRoutes.size || mounted.some(message => !message.messageId)) {
+      // Validate against the whole rendered transcript. Applying the route
+      // quarantine here could hide a conflicting row and make a prefix pass.
+      const lookup = candidate.tree ? {get:id => candidate.tree.get(id)?.record} : candidate.byId;
+      mounted = displayedReplies(C.readMessages(root, fallbackIds, () => ++sequence, lookup));
+    }
+    if (!mounted.length) return false;
+    const terminalId = historyTail(mounted) || openingTail;
+    if (terminalId) {
+      if (terminalId !== candidate.keys.at(-1)) return false;
+    } else {
+      // With the tail off screen, accept only a unique continuation of the
+      // messages mounted *now*. A shared prefix before a fork is ambiguous.
+      if (!candidate.tree || outgoingRoutes.size) return false;
+      const branch = GPTNavHistory.branchFromMiddle(candidate.tree, mounted.at(-1).messageId);
+      if (!branch) return false;
+      candidate = historyCandidate(branch);
+    }
+    const { records, keys, positions, byId } = candidate;
+    let previous = -1;
+    for (const message of mounted) {
+      const position = positions.get(message.id);
+      if (!message.messageId || position === undefined || position <= previous) return false;
+      previous = position;
+    }
+    const cached = new Map(index.map(message => [message.id, message]));
+    for (const message of mounted) cached.set(message.id, message);
+    visible = mounted;
+    historyById = byId;
+    outgoingRoutes.clear();
+    for (const message of mounted) observeSearchText(message, byId.get(message.messageId));
+    index = records.map((record, i) => {
+      const known = cached.get(keys[i]);
+      if (known) {
+        known.historyIndexed = true;
+        return known;
+      }
+      return { id:keys[i], messageId:record.id, role:record.role, text:record.text,
+        historyIndexed:true,
+        placeholder:!record.text, stable:true, order:null };
+    });
+    pendingHistory = null;
+    complete = true;
+    completedHeadId = keys[0];
+    if (!operation) setStatus('historyDone', {count:index.length});
+    updateActive();
+    render();
+    return true;
+  }
+  async function readHistoryOnOpen(mounted) {
+    const id = /^\/c\/([a-z\d_-]+)$/iu.exec(route)?.[1];
+    if (!id || !globalThis.GPTNavHistory || complete || operation?.kind === 'index' ||
+        (!mounted.length && !outgoingRoutes.size) || nativeBranch) return;
+    if (historyAttempted && !pendingHistory) return;
+    if (responseGenerating(mounted)) return;
+    const currentTail = historyTail(mounted);
+    const openingTail = outgoingRoutes.size ? null : currentTail;
+    if (pendingHistory) {
+      if (acceptHistory(pendingHistory, mounted)) return;
+      // Reconsider a previously fetched result locally on scroll. Only a new
+      // terminal identity warrants another read of the selected conversation.
+      if (currentTail && pendingHistory.checkedTail !== currentTail) {
+        historyAttempted = false;
+        historyRetried = false;
+      }
+      if (historyAttempted) return;
+      pendingHistory = null;
+    }
+    historyAttempted = true;
+    const request = new AbortController();
+    historyRequest = request;
+    const timeout = setTimeout(() => request.abort(), 120000);
+    if (!operation) setStatus('historyReading');
+    let retry = true;
+    let retryDelay = 1200;
+    try {
+      const middle = !openingTail;
+      const { records, tree } = await GPTNavHistory.read(id, {signal:request.signal, middle});
+      checkContext();
+      if (request.signal.aborted) return;
+      // The tab can change versions while a request is in flight. Read the
+      // current DOM before publishing anything from either transcript.
+      const current = displayedReplies(readMounted(), true);
+      if (request.signal.aborted) return;
+      if (!nativeBranch && !responseGenerating(current)) {
+        const candidate = historyCandidate(records);
+        candidate.tree = tree;
+        if (acceptHistory(candidate, current, openingTail)) return;
+        candidate.checkedTail = historyTail(current);
+        pendingHistory = candidate;
+        retry = Boolean(candidate.checkedTail || openingTail);
+      }
+    } catch (error) {
+      retry = error.retryable || error.name === 'AbortError' || error.name === 'TypeError';
+      retryDelay = Math.max(retryDelay, error.retryAfterMs ?? 0);
+    } finally { clearTimeout(timeout); }
+    if (historyRequest !== request) return;
+    if (!operation) setStatus('historyUnavailable');
+    // Re-read once if the network or branch changed while older pages loaded.
+    // Larger values overflow a browser timer and would retry immediately.
+    if (retry && !historyRetried && retryDelay <= 0x7fffffff) {
+      historyRetried = true;
+      const timer = setTimeout(() => {
+        if (historyRequest === request) { historyAttempted = false; scheduleScan(0); }
+      }, retryDelay);
+      request.signal.addEventListener('abort', () => clearTimeout(timer), {once:true});
+    }
+  }
   function scan() {
     checkContext();
     if (!root?.isConnected) return [];
-    const observed = C.readMessages(root, fallbackIds, () => ++sequence).filter((entry) => !supersededResponses.has(entry.id));
-    // Hydrating a partial turn can replace its fallback ordinals with real keys.
-    // Only a retained DOM identity can prove that this is the same message.
-    for (const message of observed) {
-      const old = index.find((entry) => entry.id !== message.id && entry.role === message.role && !entry.messageId && compatible(entry, message) && (
-        (entry.element === message.element && (entry.transient || message.messageId)) ||
-        (entry.transient && entry.turnElement && entry.turnElement === message.turnElement)
-      ));
-      if (!old) continue;
-      identityAliases.set(old.id, message.id);
-      if (index.some((entry) => entry !== old && entry.id === message.id)) index.splice(index.indexOf(old), 1);
-      else Object.assign(old, message);
-    }
-    activeId = canonicalId(activeId);
+    const observed = displayedReplies(readMounted(), true);
+    if (historyById) for (const message of observed) observeSearchText(message, historyById.get(message.messageId));
     const seen = new Map(observed.map((entry) => [entry.id, entry]));
-    // Only durable identities are useful once their DOM node is unmounted.
-    index = index.filter((entry) => entry.stable || seen.get(entry.id)?.element === entry.element);
+    if (historyRequest && !historyById && !complete && !nativeBranch && !operation) {
+      // A version switch can replace the whole middle window before history
+      // returns. Don't merge two provisional transcripts when different IDs
+      // occupy the same turn at the same position in the same scroller.
+      const departed = new Map(visible.filter(row => row.messageId && !seen.has(row.id))
+        .map(row => [row.y, row]));
+      if (observed.some(row => {
+        const old = departed.get(row.y);
+        return old && row.messageId && row.role === old.role && row.order === old.order && row.scroller === old.scroller;
+      })) {
+        index = index.filter(row => seen.has(row.id));
+        knownTail = pendingTail = null;
+      }
+    }
+    index = C.reconcileMountedRows(index, seen, identityAliases, compatible);
+    activeId = canonicalId(activeId);
     const headHydrating = Boolean(operation?.hydratingHead && !operation.cancelled && operation.session === session);
     const olderLoading = headHydrating || [...new Set(observed.map((message) => message.scroller))].some((scroller) => C.historyLoading(scroller, { olderOnly: true }));
     reconcileBranch(observed, seen, olderLoading);
@@ -431,13 +877,14 @@
     const head = index.find((message) => message.stable);
     if (complete && completedHeadId && head && head.id !== canonicalId(completedHeadId)) {
       complete = false; completedHeadId = null;
-      setStatus('Earlier history appeared. Index full chat again to include it.');
+      setStatus('earlierAppeared');
     } else if (complete && !completedHeadId) completedHeadId = head?.id || null;
     updateActive();
     const nextSignature = index.map((message) => `${message.id}:${message.text}`).join('\u0001');
     if (nextSignature !== signature) { signature = nextSignature; render(); }
     else updateCounts();
     applyTheme();
+    void readHistoryOnOpen(observed);
     return observed;
   }
   function scheduleScan(delay = 250) {
@@ -445,13 +892,17 @@
     scanTimer = setTimeout(() => { scanTimer = null; scan(); }, delay);
   }
   function updateCounts(shown) {
-    if (shown === undefined) { const needle = C.normalize(search.value).toLocaleLowerCase(); shown = index.filter((message) => (filter === 'all' || message.role === filter) && (!needle || message.text.toLocaleLowerCase().includes(needle))).length; }
+    if (shown === undefined) { const needle = C.normalize(search.value).toLocaleLowerCase(); shown = index.filter((message) => (filter === 'all' || message.role === filter) && (!needle || matchingText(message, needle) !== null)).length; }
+    const [key, values] = statusMessage[0];
+    if ((key === 'historyDone' || key === 'scanDone') && values?.count !== index.length) {
+      setStatus([[key, {count:index.length}], ...statusMessage.slice(1)]);
+    }
     $('.count').textContent = String(index.length);
     const categoryTotal = filter === 'all' ? index.length : index.filter((message) => message.role === filter).length;
-    const category = filter === 'user' ? 'prompts' : filter === 'assistant' ? 'replies' : 'messages';
-    $('.total').textContent = shown === categoryTotal ? `${categoryTotal} ${category} found` : `${shown} of ${categoryTotal} ${category}`;
-    $('.coverage').textContent = complete ? 'Full scan finished' : 'Page index';
-    $('.index').textContent = operation?.kind === 'index' ? 'Cancel' : 'Index full chat';
+    const category = filter === 'user' ? 'Prompts' : filter === 'assistant' ? 'Replies' : 'Messages';
+    $('.total').textContent = t(`${shown === categoryTotal ? 'found' : 'filtered'}${category}`, { count:categoryTotal, shown });
+    $('.coverage').textContent = t(complete ? 'complete' : 'pageIndex');
+    $('.index').textContent = t(operation?.kind === 'index' ? 'cancel' : 'index');
     $('.refresh').disabled = Boolean(operation);
     $('.previous').disabled = !index.some((message) => message.role === 'user');
     $('.next').disabled = $('.previous').disabled;
@@ -545,18 +996,29 @@
   }
   function markActive() {
     const promptId = activePromptId();
-    for (const button of list.querySelectorAll('.message')) button.setAttribute('aria-current', String(button.dataset.id === (filter === 'user' ? promptId : activeId)));
-    let changed = false;
-    for (const button of shadow.querySelectorAll('.prompt-bar')) {
-      const current = String(button.dataset.id === promptId);
-      if (current === 'true' && button.getAttribute('aria-current') !== current) changed = true;
-      button.setAttribute('aria-current', current);
-      button.tabIndex = button === shadow.activeElement || (!shadow.activeElement?.classList.contains('prompt-bar') && (current === 'true' || (!promptId && button === $('.rail-bars').firstElementChild))) ? 0 : -1;
+    const message = messageButtons.get(filter === 'user' ? promptId : activeId) || null;
+    if (message !== markedMessage) {
+      markedMessage?.setAttribute('aria-current', 'false');
+      message?.setAttribute('aria-current', 'true');
+      markedMessage = message;
     }
-    if (changed && !operation) revealRailPrompt(promptId);
+    const prompt = promptButtons.get(promptId) || null;
+    if (prompt !== markedPrompt) {
+      markedPrompt?.setAttribute('aria-current', 'false');
+      prompt?.setAttribute('aria-current', 'true');
+      markedPrompt = prompt;
+      if (prompt && !operation) revealRailPrompt(promptId);
+    }
+    const focused = shadow.activeElement;
+    const stop = focused?.classList.contains('prompt-bar') ? focused : prompt || $('.rail-bars').firstElementChild;
+    if (stop !== tabbablePrompt) {
+      if (tabbablePrompt) tabbablePrompt.tabIndex = -1;
+      if (stop) stop.tabIndex = 0;
+      tabbablePrompt = stop;
+    }
   }
   function revealRailPrompt(id) {
-    const bars = $('.rail-bars'), bar = [...bars.querySelectorAll('.prompt-bar')].find((button) => button.dataset.id === id);
+    const bars = $('.rail-bars'), bar = promptButtons.get(id);
     if (!bar) return;
     if (bar.offsetTop < bars.scrollTop) bars.scrollTop = bar.offsetTop;
     else if (bar.offsetTop + bar.offsetHeight > bars.scrollTop + bars.clientHeight) bars.scrollTop = bar.offsetTop + bar.offsetHeight - bars.clientHeight;
@@ -593,19 +1055,22 @@
     railSignature = next;
     const bars = $('.rail-bars'), oldScroll = bars.scrollTop;
     const focusedId = shadow.activeElement?.classList.contains('prompt-bar') ? shadow.activeElement.dataset.id : null;
-    const existing = new Map([...bars.querySelectorAll('.prompt-bar')].map((button) => [button.dataset.id, button]));
+    const existing = promptButtons;
+    promptButtons = new Map();
     const barFragment = document.createDocumentFragment();
     prompts.forEach((message, position) => {
-      const number = position + 1, preview = C.normalize(message.text).slice(0, 140);
+      const number = position + 1, preview = C.normalize(messageText(message)).slice(0, 140);
       let bar = existing.get(message.id);
       if (!bar) {
         bar = document.createElement('button'); bar.type = 'button'; bar.className = 'prompt-bar'; bar.dataset.id = message.id;
+        bar.setAttribute('aria-current', 'false'); bar.tabIndex = -1;
         const label = document.createElement('span'); label.className = 'rail-label';
         const mark = document.createElement('span'); mark.className = 'rail-mark'; mark.setAttribute('aria-hidden', 'true');
         bar.append(label, mark);
       }
-      bar.setAttribute('aria-label', `Prompt ${number}: ${preview}`);
+      bar.setAttribute('aria-label', t('promptLabel', { number, preview }));
       bar.querySelector('.rail-label').textContent = preview;
+      promptButtons.set(message.id, bar);
       barFragment.append(bar);
     });
     bars.replaceChildren(barFragment);
@@ -618,61 +1083,71 @@
     markActive();
   }
   function appendPreview(container, text, query) {
-    let start = query ? text.toLocaleLowerCase().indexOf(query.toLocaleLowerCase()) : -1;
-    const offset = Math.max(0, start - 50);
+    const match = C.findTextMatch(text, query);
+    const offset = Math.max(0, (match?.start || 0) - 50);
     const preview = `${offset ? '…' : ''}${text.slice(offset, offset + 230)}${text.length > offset + 230 ? '…' : ''}`;
-    start = query ? preview.toLocaleLowerCase().indexOf(query.toLocaleLowerCase()) : -1;
-    if (start < 0) container.textContent = preview;
+    if (!match) container.textContent = preview;
     else {
+      const start = match.start - offset + (offset ? 1 : 0);
+      const end = Math.min(match.end - offset, 230) + (offset ? 1 : 0);
       container.append(document.createTextNode(preview.slice(0, start)));
       const mark = document.createElement('mark');
-      mark.textContent = preview.slice(start, start + query.length);
-      container.append(mark, document.createTextNode(preview.slice(start + query.length)));
+      mark.textContent = preview.slice(start, end);
+      container.append(mark, document.createTextNode(preview.slice(end)));
     }
   }
   function render() {
     renderRail();
     for (const button of shadow.querySelectorAll('.filter')) button.setAttribute('aria-pressed', String(button.dataset.filter === filter));
+    if (!open) { updateCounts(); return; }
     const query = C.normalize(search.value);
     const needle = query.toLocaleLowerCase();
-    const shown = index.filter((message) => (filter === 'all' || message.role === filter) && (!needle || message.text.toLocaleLowerCase().includes(needle)));
+    const shown = [];
+    for (const message of index) {
+      if (filter !== 'all' && message.role !== filter) continue;
+      const text = matchingText(message, needle);
+      if (text !== null) shown.push({message, text});
+    }
     updateCounts(shown.length);
-    if (!open) return;
     const focusedId = shadow.activeElement?.dataset.id;
     const oldScroll = list.scrollTop;
     const fragment = document.createDocumentFragment();
     const numbered = filter === 'all' ? index : index.filter((message) => message.role === filter);
     const ordinals = new Map(numbered.map((message, i) => [message.id, i + 1]));
-    const currentId = filter === 'user' ? activePromptId() : activeId;
-    const existing = new Map(Array.from(list.querySelectorAll('.message'), (button) => [button.dataset.id, button.closest('li')]));
-    for (const message of shown) {
+    const existing = messageButtons;
+    messageButtons = new Map();
+    for (const {message, text} of shown) {
       const cached = existing.get(message.id);
-      const cacheKey = `${message.text}\0${query}\0${ordinals.get(message.id)}\0${filter}`;
-      if (cached && cached._compassKey === cacheKey) { cached.querySelector('button').setAttribute('aria-current', String(message.id === currentId)); fragment.append(cached); continue; }
+      const cacheKey = `${host.lang}\0${text}\0${query}\0${ordinals.get(message.id)}\0${filter}`;
+      if (cached && cached.parentElement._compassKey === cacheKey) {
+        messageButtons.set(message.id, cached); fragment.append(cached.parentElement); continue;
+      }
       const item = document.createElement('li'); item.className = 'item';
       const button = document.createElement('button'); button.type = 'button'; button.className = 'message'; button.dataset.id = message.id;
-      button.setAttribute('aria-current', String(message.id === currentId));
+      button.setAttribute('aria-current', 'false');
       item._compassKey = cacheKey;
       const number = ordinals.get(message.id);
-      button.title = `${filter === 'user' ? 'Prompt' : filter === 'assistant' ? 'Reply' : 'Message'} ${number} · ${message.role === 'user' ? 'You' : 'ChatGPT'}\n${message.text.slice(0, 800)}`;
+      button.title = `${t(filter === 'user' ? 'prompt' : filter === 'assistant' ? 'reply' : 'message')} ${number} · ${message.role === 'user' ? t('you') : 'ChatGPT'}\n${text.slice(0, 800)}`;
       const badge = document.createElement('span'); badge.className = 'number'; badge.textContent = String(number);
       const entry = document.createElement('span'); entry.className = 'entry';
-      const role = document.createElement('span'); role.className = `role ${message.role}`; role.textContent = message.role === 'user' ? 'You' : 'ChatGPT';
-      const preview = document.createElement('span'); preview.className = 'preview'; appendPreview(preview, message.text, query);
+      const role = document.createElement('span'); role.className = `role ${message.role}`; role.textContent = message.role === 'user' ? t('you') : 'ChatGPT';
+      const preview = document.createElement('span'); preview.className = 'preview'; appendPreview(preview, text, query);
+      messageButtons.set(message.id, button);
       entry.append(role, preview); button.append(badge, entry); item.append(button); fragment.append(item);
     }
     if (!shown.length) {
       const empty = document.createElement('li'); empty.className = 'empty';
-      const title = document.createElement('strong'); title.textContent = query ? 'No matching messages yet' : 'Your conversation starts here';
-      empty.append(title, document.createTextNode(query ? 'Try another phrase or index the full chat to search earlier messages.' : 'Open a ChatGPT conversation. Your prompts and replies will appear automatically.'));
+      const title = document.createElement('strong'); title.textContent = t(query ? 'noMatches' : 'startHere');
+      empty.append(title, document.createTextNode(t(query ? 'trySearch' : 'openChat')));
       fragment.append(empty);
     }
     list.replaceChildren(fragment);
     list.scrollTop = oldScroll;
-    if (focusedId) Array.from(list.querySelectorAll('.message')).find((button) => button.dataset.id === focusedId)?.focus({ preventScroll: true });
+    if (focusedId) messageButtons.get(focusedId)?.focus({ preventScroll: true });
+    markActive();
   }
   function mainScroller() {
-    const sample = visible.find((message) => message.element.isConnected) || index.find((message) => message.element.isConnected);
+    const sample = visible.find((message) => message.element?.isConnected) || index.find((message) => message.element?.isConnected);
     return sample?.scroller || document.scrollingElement;
   }
   const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -680,7 +1155,7 @@
   function ownsOperation(task) { return operation === task && task.session === session; }
   function cancelled(task) {
     checkContext();
-    return task.cancelled || !ownsOperation(task.owner || task) || !root?.isConnected;
+    return task.cancelled || task.userScrolled || task.owner?.userScrolled || !ownsOperation(task.owner || task) || !root?.isConnected;
   }
   function capturePosition(scroller) {
     const view = C.viewport(scroller);
@@ -702,9 +1177,10 @@
       const recovery = { owner:task, started:Date.now(), limit:12000 };
       const hints = [position.top];
       if (position.reversed) hints.push(C.scrollMetrics(scroller).maximum - position.fromEnd);
+      if (task.userScrolled) return false;
       const found = anchor && (resolve(anchor.id, anchor) || await seekLoaded(anchor, scroller, recovery, position.offset, hints));
       const exact = found && await align(found, recovery, position.offset);
-      if (cancelled(recovery)) return false;
+      if (cancelled(recovery) || task.userScrolled) return false;
       if (exact) {
         task.restoreClamped = Math.abs(exact.element.getBoundingClientRect().top - C.viewport(exact.scroller).top - position.offset) > 3;
         return !task.restoreClamped;
@@ -721,7 +1197,7 @@
     const arrival = jumpPin || previous?.arrival;
     if (previous) previous.cancelled = true;
     jumpPin = null;
-    const task = { kind, scroller, position, arrival, cancelled: false, session, route, started: Date.now() };
+    const task = { kind, scroller, position, arrival, cancelled: false, session, route, started: Date.now(), wheelCarry: Date.now() - lastWheelAt < 180, wheelTotal:0, wheelAt:0, wheelDirection:0 };
     operation = task;
     updateCounts();
     return task;
@@ -816,7 +1292,7 @@
         progress = state.progress; progressed = true;
         deadline = Math.min(hardDeadline, Date.now() + idle);
       }
-      setStatus(`Loading earlier messages… ${index.length} messages found. Cancel to return to your place.`);
+      setStatus('loadingEarlier', { count:index.length });
       if (C.scrollPosition(scroller) <= 3 && state.head && !state.pending && Date.now() - quietSince >= quiet) return { ...state, settled: true, progressed };
       // A fixed-height virtual spacer can remain blank at physical zero. Visit
       // the oldest known real message to trigger its older-history boundary.
@@ -840,7 +1316,7 @@
       if (state.olderPending) return { bottom: false, blank, needsHead: true };
       if (state.pending) return { bottom: false, blank: true };
       blank ||= !state.settled;
-      setStatus(`Indexing… ${index.length} messages found. Cancel to return to your place.`);
+      setStatus('indexing', { count:index.length });
       const maximum = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
       if (C.scrollPosition(scroller) >= maximum - 3) {
         const bottom = await settleViewport(scroller, task, { minimum: 500, maximum: 5000, quiet: 350, stopOnOlderHistory: true });
@@ -857,15 +1333,19 @@
     return { bottom: false, blank: true };
   }
   async function fullScan() {
+    historyRequest?.abort();
+    historyRequest = null;
+    pendingHistory = null;
+    historyAttempted = true;
     scan();
     const scroller = mainScroller();
-    if (!scroller || !visible.length) { setStatus('Open a conversation with messages first.'); return; }
+    if (!scroller || !visible.length) { setStatus('openFirst'); return; }
     const task = startOperation('index', scroller);
     complete = false;
     completedHeadId = null;
     let verified = false;
     try {
-      setStatus('Indexing from the beginning. You can cancel at any time.');
+      setStatus('indexingStart');
       for (let pass = 0; pass < 8 && operationTimeLeft(task) > 0; pass++) {
         const head = await hydrateHead(scroller, task, { maximum: 60000, idle: 20000 });
         if (cancelled(task)) return;
@@ -885,19 +1365,20 @@
       if (ownsOperation(task)) {
         complete = verified;
         completedHeadId = complete ? index.find((message) => message.stable)?.id || null : null;
-        setStatus(complete ? `Scan finished: ${index.length} messages. Returning to your place.` : `${index.length} messages indexed. ChatGPT did not finish loading; try another scan.`);
+        setStatus(complete ? 'scanReturning' : 'scanPartial', { count:index.length });
       }
     } catch (error) {
-      if (ownsOperation(task)) setStatus('The page changed during indexing. Refresh the index and try again.');
+      if (ownsOperation(task)) setStatus('scanChanged');
       console.warn('[GPT-Navigator] Index interrupted:', error.message);
     } finally {
       try {
-        if (ownsOperation(task)) {
+        if (ownsOperation(task) && !task.userScrolled) {
           const restored = await restorePosition(scroller, task.position, task);
           if (ownsOperation(task)) {
-            if (!restored) setStatus(task.restoreClamped ? `${task.cancelled ? 'Scan cancelled' : complete ? `Full page scan finished · ${index.length} messages` : 'Index retained'}. Returned to your original message; its previous reading offset no longer fits.` : 'Index retained. ChatGPT could not reload your original message; position restored approximately.');
-            else if (task.cancelled) setStatus(`Scan cancelled. ${index.length} messages retained; index may be partial.`);
-            else if (complete) setStatus(`Full page scan finished · ${index.length} messages.`);
+            if (task.userScrolled) setStatus('scanScrolled');
+            else if (!restored) setStatus(task.restoreClamped ? [[task.cancelled ? 'scanCancelled' : complete ? 'scanDone' : 'retained', { count:index.length }], ['clamped']] : [['restoreApprox']]);
+            else if (task.cancelled) setStatus('cancelledCount', { count:index.length });
+            else if (complete) setStatus('scanDone', { count:index.length });
           }
         }
       } finally { finishOperation(task); }
@@ -906,7 +1387,7 @@
   function compatible(expected, actual) {
     if (!expected || !actual || expected.role !== actual.role) return false;
     if (expected.messageId && actual.messageId) return expected.messageId === actual.messageId;
-    if (expected.text.startsWith('[Response loading') || expected.text.startsWith('[Attachment or empty')) return true;
+    if (expected.placeholder) return true;
     return expected.role === 'user' ? expected.text === actual.text : expected.text === actual.text || actual.text.startsWith(expected.text) || expected.text.startsWith(actual.text);
   }
   function canonicalId(id) {
@@ -922,6 +1403,10 @@
     return { ...target, id, stable: current?.stable ?? target.stable, messageId: current?.messageId ?? target.messageId };
   }
   function findObserved(observed, id, expected) {
+    if (expected?.historyIndexed) {
+      return observed.find(message => message.element.isConnected && message.role === expected.role &&
+        message.messageId && message.messageId === expected.messageId);
+    }
     const canonical = canonicalId(id), target = canonicalTarget(expected);
     return observed.find((message) => message.id === canonical && message.element.isConnected && (!target || (compatible(target, message) && (target.stable || target.element === message.element) && (target.messageId || target.element === message.element || target.text === message.text))));
   }
@@ -966,8 +1451,81 @@
     if (neighbors.every((position) => position > wanted)) return -1;
     return 0;
   }
+  async function seekHistoryMessage(target, scroller, task, offset) {
+    // The index provides identity and order. Derive pixel positions only from
+    // this live scroller, whose extent can grow every time older turns load.
+    let low = 0, high = 0, extent = -1, firstGuess = true, lastProbe = null, probedBlank = false;
+    let state = hydrationState(scroller);
+    while (!cancelled(task) && operationTimeLeft(task) > 0 && scroller.isConnected) {
+      const found = findObserved(state.messages, target.id, target);
+      if (found) return found;
+      const rank = index.findIndex(message => message.id === target.id);
+      if (rank < 0) return null;
+      const { maximum, position } = C.scrollMetrics(scroller);
+      const prepended = lastProbe === 0 && extent >= 0 && maximum > extent + 2;
+      if (Math.abs(maximum - extent) > 1 || extent < 0) {
+        extent = maximum; low = 0; high = maximum; firstGuess = true;
+      }
+      // A rapid second click may run after the first scroll write but before
+      // the virtualizer paints. Offscreen nodes belong to the previous window
+      // and cannot establish bounds for the current scroll position.
+      const nearby = state.inView;
+      if (!nearby.length) {
+        state = await settleViewport(scroller, task, { target, maximum:2400 });
+        if (cancelled(task)) return null;
+        if (!state.inView.length && !findObserved(state.messages, target.id, target) && !state.pending) {
+          // A silent fixed-height spacer can need a visit to a known real row
+          // before it paints more turns. Try that anchor once. An announced
+          // load, however, gets the remaining lookup time and stays cancellable.
+          if (probedBlank) return null;
+          const positionNow = C.scrollPosition(scroller);
+          let closest = null;
+          for (const row of index) {
+            if (!row.stable || row.scroller !== scroller || !Number.isFinite(row.y)) continue;
+            if (!closest || Math.abs(row.y - positionNow) < Math.abs(closest.y - positionNow)) closest = row;
+          }
+          if (!closest) return null;
+          probedBlank = true;
+          move(scroller, closest.y - offset);
+          state = await settleViewport(scroller, task, { target, maximum:2400 });
+        }
+        continue;
+      }
+      const direction = windowDirection(target, nearby);
+      if (!direction && !state.pending) return null;
+      if (direction < 0 && position <= 3) {
+        // The known target predates the currently loaded page. Stay at the
+        // top until ChatGPT prepends another batch or the operation times out.
+        const oldHead = nearby[0]?.id;
+        const oldExtent = maximum;
+        state = await settleViewport(scroller, task, {
+          target, maximum: 6500, accept: s => s.inView[0]?.id !== oldHead ||
+            Math.abs(C.scrollMetrics(scroller).maximum - oldExtent) > 2
+        });
+        if (!state.settled && !state.pending && C.scrollPosition(scroller) <= 3) return null;
+        low = 0; high = C.scrollMetrics(scroller).maximum; firstGuess = true; lastProbe = 0;
+        continue;
+      }
+      if (direction < 0) high = Math.min(high, Math.max(0, position - 2));
+      if (direction > 0) low = Math.max(low, Math.min(maximum, position + 2));
+      if (low > high) return null;
+      const guess = firstGuess && Number.isFinite(target.y) && target.scroller === scroller ? target.y - offset :
+        firstGuess ? maximum * rank / Math.max(1, index.length - 1) : (low + high) / 2;
+      let next = Math.max(low, Math.min(high, guess));
+      const viewHeight = C.viewport(scroller).height;
+      if (direction < 0 && low === 0 && (prepended || next < viewHeight)) next = 0;
+      if (direction > 0 && high === maximum && maximum - next < viewHeight) next = maximum;
+      if (!firstGuess && Math.abs(next - position) <= 1 && !state.pending) return null;
+      firstGuess = false;
+      lastProbe = next;
+      move(scroller, next);
+      state = await settleViewport(scroller, task, { minimum:160, quiet:120, maximum:2400, target });
+    }
+    return null;
+  }
   async function seekLoaded(target, scroller, task, offset = 76, hints = []) {
     if (!target.stable || !scroller.isConnected) return null;
+    if (target.historyIndexed && task.kind === 'jump') return seekHistoryMessage(target, scroller, task, offset);
     let maximum = C.scrollMetrics(scroller).maximum, low = 0, high = maximum;
     const tried = [];
     let nearby = [];
@@ -1012,7 +1570,7 @@
     highlightTimer = setTimeout(() => { target.hidden = true; }, 2200);
   }
   async function jump(id) {
-    const originSession = session, originRoute = location.pathname + location.search;
+    const originSession = session, originRoute = conversationRoute();
     const stored = index.find((message) => message.id === canonicalId(id)); if (!stored) return;
     const observed = scan();
     const target = canonicalTarget(stored);
@@ -1024,7 +1582,8 @@
     try {
       let found = findObserved(observed, target.id, target);
       if (!found) {
-        setStatus('Locating the selected message…');
+        setStatus('locating');
+        if (target.historyIndexed) task.limit = 90000;
         found = await seekLoaded(target, scroller, task);
       }
       if (cancelled(task)) return;
@@ -1032,7 +1591,7 @@
       if (found) {
         moveToMessage(found, 76);
         const current = resolve(target.id, target);
-        exact = atMessageOffset(current, 76) ? current : current && await align(current, task);
+        exact = !target.historyIndexed && atMessageOffset(current, 76) ? current : current && await align(current, task);
       }
       if (found && !exact && !cancelled(task) && operationTimeLeft(task) > 0) {
         const reloaded = await seekLoaded(target, scroller, task);
@@ -1052,22 +1611,22 @@
           loadingOlder
         };
         render(); highlight(exact);
-        setStatus(`At message ${index.findIndex((message) => message.id === exact.id) + 1} · ${exact.role === 'user' ? 'Your prompt' : 'ChatGPT reply'}.`);
+        setStatus(exact.role === 'user' ? 'atPrompt' : 'atReply', { number:index.findIndex((message) => message.id === exact.id) + 1 });
         if (innerWidth < 700) setOpen(false);
       } else if (!cancelled(task)) {
-        setStatus('ChatGPT did not load that exact message. Returning to your place.');
+        setStatus('missingReturning');
       }
     } catch (error) {
-      if (ownsOperation(task)) setStatus('The page changed during navigation. Refresh the index and try again.');
+      if (ownsOperation(task)) setStatus('navigationChanged');
       console.warn('[GPT-Navigator] Jump interrupted:', error.message);
     } finally {
       try {
-        if (!success && ownsOperation(task)) {
+        if (!success && ownsOperation(task) && !task.userScrolled) {
           const restored = await restorePosition(scroller, task.position, task);
           if (ownsOperation(task)) {
-            const result = task.cancelled ? 'Navigation cancelled.' : 'Exact message could not be loaded.';
-            setStatus(`${result} ${restored || task.restoreClamped ? 'Returned to your original message.' : 'Restored an approximate scroll position.'}`);
-            if (!open) toast(status.textContent);
+            if (task.userScrolled) setStatus('navigationScrolled');
+            else setStatus([[task.cancelled ? 'navigationCancelled' : 'missing'], [restored || task.restoreClamped ? 'returned' : 'approximate']]);
+            if (!open) toast(statusMessage);
           }
         }
       } finally { finishOperation(task); }
@@ -1081,7 +1640,7 @@
     for (cursor += direction; cursor >= 0 && cursor < index.length; cursor += direction) {
       if (index[cursor].role === 'user') { jump(index[cursor].id); return; }
     }
-    toast('No further prompt in this index. Index full chat to include earlier messages.');
+    toast('noFurther');
   }
   $('.rail').addEventListener('pointerenter', (event) => { if (event.pointerType !== 'touch') expandRail(); });
   $('.rail').addEventListener('pointerleave', scheduleRailCollapse);
@@ -1108,13 +1667,46 @@
   });
   $('.close').addEventListener('click', () => setOpen(false));
   search.addEventListener('input', render);
-  for (const button of shadow.querySelectorAll('.filter')) button.addEventListener('click', () => { filter = button.dataset.filter; savePreferences(); render(); });
+  for (const button of shadow.querySelectorAll('.filter')) button.addEventListener('click', () => { filter = button.dataset.filter; savePreferences({ filter }); render(); });
   list.addEventListener('click', (event) => { const button = event.target.closest('.message'); if (button) jump(button.dataset.id); });
   $('.previous').addEventListener('click', () => adjacent(-1));
   $('.next').addEventListener('click', () => adjacent(1));
-  $('.index').addEventListener('click', () => { if (operation?.kind === 'index') { operation.cancelled = true; setStatus('Cancelling… returning to your place.'); } else fullScan(); });
+  $('.index').addEventListener('click', () => { if (operation?.kind === 'index') { operation.cancelled = true; setStatus('cancelling'); } else fullScan(); });
   $('.refresh').addEventListener('click', () => { reset(); scan(); render(); });
-  $('select').addEventListener('change', (event) => { theme = event.target.value; applyTheme(); savePreferences(); });
+  $('.theme').addEventListener('change', (event) => { theme = event.target.value; applyTheme(); savePreferences({ theme }); });
+  $('.language').addEventListener('change', (event) => { language = event.target.value; applyLanguage(); savePreferences({ language }); });
+  let updateHoverTimer;
+  function showUpdateDetails() {
+    clearTimeout(updateHoverTimer);
+    if (!$('.update-wrap').hidden) {
+      $('.update-tooltip').hidden = false;
+      void loadReleaseNotes();
+    }
+  }
+  function hideUpdateDetails() {
+    clearTimeout(updateHoverTimer);
+    $('.update-tooltip').hidden = true;
+  }
+  $('.update-wrap').addEventListener('pointerenter', showUpdateDetails);
+  $('.update-wrap').addEventListener('pointerleave', () => {
+    updateHoverTimer = setTimeout(hideUpdateDetails, 180);
+  });
+  $('.update-wrap').addEventListener('focusin', showUpdateDetails);
+  $('.update-wrap').addEventListener('focusout', hideUpdateDetails);
+  $('.update-wrap').addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') { event.stopPropagation(); hideUpdateDetails(); $('.close').focus({ preventScroll:true }); }
+  });
+  $('.update-badge').addEventListener('click', async () => {
+    try {
+      const response = await chrome.runtime.sendMessage({ type:'compass:ack-update', version });
+      if (response?.ok) {
+        updateStateRevision++;
+        seenVersion = version;
+        renderUpdateBadge();
+        $('.close').focus({ preventScroll:true });
+      }
+    } catch { /* Retain the badge if acknowledgement could not be saved. */ }
+  });
   shadow.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
       if (operation) operation.cancelled = true;
@@ -1128,15 +1720,34 @@
   document.addEventListener('submit', (event) => {
     if (event.isTrusted && event.target instanceof Element) confirmNativeEdit(event.target.closest(nativeTurnSelector));
   }, true);
+  function inputInScroller(event, keyboard = false) {
+    const scroller = operation?.scroller || jumpPin?.scroller;
+    if (!scroller || event.composedPath().includes(host)) return false;
+    const target = event.target;
+    if (keyboard && (target === document || target === document.body || target === document.documentElement)) return true;
+    return target === scroller || (target instanceof Element && C.scrollContainer(target, true) === scroller);
+  }
+  function yieldToScroll() {
+    jumpPin = null;
+    if (!operation || operation.userScrolled) return;
+    operation.cancelled = true;
+    operation.userScrolled = true;
+    setStatus(operation.kind === 'index' ? 'scanScrolled' : 'navigationScrolled');
+  }
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && nativeBranch?.kind === 'redo' && !nativeBranch.confirmed) nativeBranch = null;
     if (!event.repeat && ['Enter', ' '].includes(event.key) && nativeBranch?.kind === 'redo' && !nativeBranch.confirmed) observeNativeBranchAction(event);
-    if (event.repeat || C.isEditable(event)) return;
-    if (event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey && ['ArrowUp','ArrowDown'].includes(event.code)) {
+    if (event.isComposing || C.isEditable(event)) return;
+    const navigationModifier = isMac ? (event.metaKey && !event.ctrlKey) || (event.ctrlKey && !event.metaKey) : event.ctrlKey && !event.metaKey;
+    if (navigationModifier && event.shiftKey && !event.altKey && ['ArrowUp','ArrowDown'].includes(event.code)) {
       event.preventDefault(); event.stopPropagation();
-      adjacent(event.code === 'ArrowUp' ? -1 : 1);
+      if (!event.repeat) adjacent(event.code === 'ArrowUp' ? -1 : 1);
+      return;
     }
-    if (['ArrowUp','ArrowDown','PageUp','PageDown','Home','End','Space'].includes(event.code) && !event.composedPath().includes(host) && !(event.ctrlKey && event.shiftKey)) jumpPin = null;
+    if (['ArrowUp','ArrowDown','PageUp','PageDown','Home','End','Space'].includes(event.code) && inputInScroller(event, true)) {
+      if (event.code === 'Space' && event.target instanceof Element && event.target.closest('button, [role="button"], a[href]')) return;
+      yieldToScroll();
+    }
   }, true);
   document.addEventListener('scroll', (event) => {
     if (event.composedPath().includes(host)) return;
@@ -1144,14 +1755,31 @@
     if (!scrollTimer) scrollTimer = setTimeout(() => { scrollTimer = null; scan(); }, 120);
   }, true);
   document.addEventListener('wheel', (event) => {
-    if (event.composedPath().includes(host)) return;
-    jumpPin = null;
-    if (operation && !operation.restoring) {
-      operation.cancelled = true;
-      setStatus(operation.kind === 'index' ? 'Scan cancelled by scrolling. Returning to your place.' : 'Navigation cancelled by scrolling.');
-    }
+    const now = Date.now(), gap = now - lastWheelAt;
+    if (event.ctrlKey || !event.deltaY || Math.abs(event.deltaX) >= Math.abs(event.deltaY)) return;
+    lastWheelAt = now;
+    if (!inputInScroller(event)) return;
+    if (!operation) { jumpPin = null; return; }
+    // A gesture already in flight when a prompt was clicked is often trackpad
+    // momentum. Ignore its tail until a pause, with a short bounded grace period.
+    if (operation.wheelCarry && gap < 180 && now - operation.started < 500) return;
+    operation.wheelCarry = false;
+    const direction = Math.sign(event.deltaY);
+    if (now - operation.wheelAt > 180 || direction !== operation.wheelDirection) operation.wheelTotal = 0;
+    operation.wheelAt = now; operation.wheelDirection = direction;
+    operation.wheelTotal += Math.abs(event.deltaY) * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? innerHeight : 1);
+    if (operation.wheelTotal < 12) return;
+    yieldToScroll();
   }, { capture: true, passive: true });
   document.addEventListener('pointerdown', (event) => {
+    const scroller = operation?.scroller;
+    if (scroller && event.button === 0 && event.pointerType !== 'touch' && !event.composedPath().includes(host)) {
+      const page = scroller === document.scrollingElement;
+      const element = page ? document.documentElement : scroller;
+      const left = page ? 0 : element.getBoundingClientRect().left + element.clientLeft;
+      if ((event.target === element || event.target === scroller || (page && event.target === document)) &&
+          (event.clientX < left || event.clientX >= left + element.clientWidth)) yieldToScroll();
+    }
     if (!event.composedPath().includes(host)) jumpPin = null;
     if (nativeBranch?.kind === 'redo' && !nativeBranch.confirmed &&
         event.composedPath().some((node) => node instanceof Element && node.matches('[role="menu"]'))) observeNativeBranchAction(event);
@@ -1159,11 +1787,22 @@
         !nativeBranch.trigger?.contains(event.target) &&
         !event.composedPath().some((node) => node instanceof Element && node.matches('[role="menu"]'))) nativeBranch = null;
   }, true);
+  let touchOrigin = null;
   document.addEventListener('touchstart', (event) => {
-    if (event.composedPath().includes(host)) return;
-    jumpPin = null;
-    if (operation && !operation.restoring) operation.cancelled = true;
-  }, { capture: true, passive: true });
+    const finger = event.touches[0];
+    touchOrigin = event.touches.length === 1 && inputInScroller(event)
+      ? { x:finger.clientX, y:finger.clientY, id:finger.identifier } : null;
+  }, { capture:true, passive:true });
+  document.addEventListener('touchmove', (event) => {
+    if (!touchOrigin || event.touches.length !== 1) { touchOrigin = null; return; }
+    const finger = event.touches[0];
+    const dy = Math.abs(finger.clientY - touchOrigin.y);
+    if (finger.identifier === touchOrigin.id && dy >= 8 && dy > Math.abs(finger.clientX - touchOrigin.x)) {
+      touchOrigin = null;
+      yieldToScroll();
+    }
+  }, { capture:true, passive:true });
+  for (const type of ['touchend','touchcancel']) document.addEventListener(type, () => { touchOrigin = null; }, { capture:true, passive:true });
   const observer = new MutationObserver((mutations) => {
     if (mutations.every((mutation) => mutation.target === host || host.contains(mutation.target))) return;
     scheduleScan();
@@ -1174,18 +1813,38 @@
   themeObserver.observe(document.body, { attributes:true, attributeFilter:['class','style','data-theme'] });
   matchMedia('(prefers-color-scheme:dark)').addEventListener('change', applyTheme);
   window.addEventListener('resize', () => { $('.target').hidden = true; scheduleScan(); });
+  window.addEventListener('languagechange', () => { if (language === 'auto') applyLanguage(); });
+  window.addEventListener('focus', () => { if (open) refreshShortcut(); });
   setInterval(() => { checkContext(); applyTheme(); }, 750);
   try {
     chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-      if (message.type === 'compass:toggle') { setOpen(!open, true); sendResponse({ ok:true }); }
-    });
-    chrome.storage.local.get('compassPreferences').then(({ compassPreferences:prefs }) => {
-      if (prefs) {
-        if (['auto','dark','light'].includes(prefs.theme)) theme = prefs.theme;
-        if (['all','user','assistant'].includes(prefs.filter)) filter = prefs.filter;
+      if (message.type === 'compass:toggle') {
+        setOpen(!open, true);
+        sendResponse({ ok:true, version });
       }
-      $('select').value = theme; applyTheme(); render();
+    });
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area === 'local' && (changes.compassUpdateVersion || changes.compassSeenVersion)) {
+        updateStateRevision++;
+        if (changes.compassUpdateVersion) updateVersion = changes.compassUpdateVersion.newValue || '';
+        if (changes.compassSeenVersion) seenVersion = changes.compassSeenVersion.newValue || '';
+        renderUpdateBadge();
+      }
+      if (area === 'local' && changes.compassPreferences) {
+        preferencesRevision++;
+        applyPreferences(changes.compassPreferences.newValue);
+      }
+    });
+    const initialUpdateRevision = updateStateRevision;
+    const initialPreferencesRevision = preferencesRevision;
+    chrome.storage.local.get(['compassPreferences', 'compassUpdateVersion', 'compassSeenVersion']).then(({ compassPreferences:prefs, compassUpdateVersion, compassSeenVersion }) => {
+      if (updateStateRevision === initialUpdateRevision) {
+        updateVersion = compassUpdateVersion || '';
+        seenVersion = compassSeenVersion || '';
+      }
+      if (preferencesRevision === initialPreferencesRevision) applyPreferences(prefs);
+      renderUpdateBadge();
     }).catch(() => {});
   } catch { /* Page still works if the extension has just been reloaded. */ }
-  scan(); applyTheme();
+  scan(); applyTheme(); applyLanguage(); refreshShortcut();
 })();
