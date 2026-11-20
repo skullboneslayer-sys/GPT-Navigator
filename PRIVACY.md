@@ -1,10 +1,10 @@
 # GPT-Navigator Privacy Policy
 
-GPT-Navigator reads ChatGPT conversation text, message identifiers, and search terms within the user's browser to provide navigation and search. It checks the current conversation address to reset navigation when the conversation changes.
+GPT-Navigator reads ChatGPT conversation text, message identifiers, and search terms within the user's browser to provide navigation and search. It checks the current conversation address to reset navigation when the conversation changes. To index the open conversation automatically, the extension uses your session token only to request its history from ChatGPT and does not save the token.
 
 Conversation content and search terms are kept temporarily in browser memory. They are not saved persistently or uploaded by the extension to the developer or third parties. The temporary index is cleared when the conversation changes or the page is refreshed or closed.
 
-Only theme and message-filter preferences are saved locally.
+Only the selected theme, language, message filter, and update-badge status are saved locally.
 
 Uninstalling the extension removes these saved preferences.
 
