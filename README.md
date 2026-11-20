@@ -47,7 +47,7 @@ Prefer installing manually? Follow the instructions below.
 
 ## Install in a Chromium browser
 
-1. Download **GPT-Navigator-chromium-v1.0.zip** from [Releases](https://github.com/skullboneslayer-sys/GPT-Navigator/releases).
+1. Download **GPT-Navigator-chromium-v#.zip** from [Releases](https://github.com/skullboneslayer-sys/GPT-Navigator/releases).
 2. Extract it into a folder you will keep.
 3. Open your browser's extensions page and enable **Developer mode**:
 
